@@ -1,0 +1,52 @@
+name: Test
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout lua-resty-yar
+        uses: actions/checkout@v4
+
+      - name: Checkout lua-yar
+        uses: actions/checkout@v4
+        with:
+          repository: fangfengxiang/lua-yar
+          path: lua-yar
+
+      - name: Install OpenResty
+        uses: openresty/openresty-action@v1
+        with:
+          version: 1.25.3.1
+
+      - name: Install luacheck
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq luarocks
+          luarocks install luacheck
+
+      - name: Install test-nginx
+        run: |
+          sudo apt-get install -y -qq cpanminus
+          sudo cpanm --notest Test::Nginx
+
+      - name: Setup Lua paths
+        run: |
+          echo "LUA_PATH=$PWD/lua-yar/src/?.lua;$PWD/lua-yar/src/?/init.lua;;" >> $GITHUB_ENV
+
+      - name: Lint
+        run: luacheck lib/
+
+      - name: Test
+        run: prove -r t
+        env:
+          LUA_PATH: ${{ env.LUA_PATH }}
+
+      - name: OPM build validation
+        run: opm build
