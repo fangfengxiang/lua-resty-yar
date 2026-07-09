@@ -1,0 +1,97 @@
+name: Release
+
+# Triggered when a version tag (v*) is pushed.
+# Convention: tag name = v<version>, e.g. v0.1.0, v0.2.0-rc1
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Extract version from tag
+        id: version
+        run: echo "version=${GITHUB_REF_NAME#v}" >> $GITHUB_OUTPUT
+
+      - name: Verify dist.ini version matches tag
+        run: |
+          TAG_VERSION="${{ steps.version.outputs.version }}"
+          DIST_VERSION=$(grep '^version=' dist.ini | cut -d= -f2)
+          if [ "$TAG_VERSION" != "$DIST_VERSION" ]; then
+            echo "::error::Version mismatch: tag=$TAG_VERSION dist.ini=$DIST_VERSION"
+            exit 1
+          fi
+
+      - name: Install OpenResty (for opm build)
+        run: |
+          wget -qO - https://openresty.org/package/pubkey.gpg \
+            | sudo gpg --dearmor -o /usr/share/keyrings/openresty.gpg
+          codename=$(lsb_release -sc)
+          echo "deb [signed-by=/usr/share/keyrings/openresty.gpg] http://openresty.org/package/ubuntu $codename main" \
+            | sudo tee /etc/apt/sources.list.d/openresty.list
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq openresty openresty-opm
+          echo "/usr/local/openresty/bin" >> $GITHUB_PATH
+
+      - name: OPM build validation
+        run: |
+          printf 'github_account=fangfengxiang\ndownload_server=https://opm.openresty.org\n' > ~/.opmrc
+          opm build
+
+      - name: OPM upload
+        if: ${{ env.OPM_PASSWORD != '' }}
+        env:
+          OPM_PASSWORD: ${{ secrets.OPM_PASSWORD }}
+        run: |
+          echo "github_token=$OPM_PASSWORD" >> ~/.opmrc
+          opm upload
+
+      - name: Create source tarball
+        run: |
+          git archive --format=tar.gz \
+            --prefix=lua-resty-yar-${{ steps.version.outputs.version }}/ \
+            -o lua-resty-yar-${{ steps.version.outputs.version }}.tar.gz HEAD
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: lua-resty-yar v${{ steps.version.outputs.version }}
+          body: |
+            High-performance Yar RPC framework for OpenResty, built on [lua-yar](https://github.com/fangfengxiang/lua-yar).
+
+            ## Installation
+
+            ```bash
+            opm get fangfengxiang/lua-resty-yar
+            ```
+
+            The dependency lua-yar is declared in `dist.ini` and installed automatically by OPM.
+
+            ## Key Features
+
+            - HTTP / TCP stream server handlers (`content_by_lua` entry)
+            - Cosocket injection with connection pooling and keepalive
+            - Nested config schema with flat-format backward compatibility
+            - Plugin registry with priority-based ordering
+            - Lifecycle hooks (on_error / on_timeout derived from on_response)
+            - Observability suite (access logging, trace, Prometheus metrics)
+            - Optional cjson / cmsgpack C extension acceleration
+            - Optional lua-resty-http transport provider
+            - Structured Error objects (5 error codes)
+
+            ## Documentation
+
+            - [README](https://github.com/fangfengxiang/lua-resty-yar#readme)
+            - [API Reference](https://github.com/fangfengxiang/lua-resty-yar/blob/main/docs/api.md)
+            - [Changelog](https://github.com/fangfengxiang/lua-resty-yar/blob/main/CHANGELOG.md)
+          generate_release_notes: true
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          files: |
+            lua-resty-yar-${{ steps.version.outputs.version }}.tar.gz

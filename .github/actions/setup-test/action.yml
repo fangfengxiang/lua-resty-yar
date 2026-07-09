@@ -1,0 +1,73 @@
+name: Setup test environment
+description: Checkout lua-yar, install OpenResty/OPM/LuaRocks, install lua-yar via LuaRocks, optional Test::Nginx, setup LUA_PATH
+
+inputs:
+  openresty-version:
+    description: Pin a specific OpenResty version (e.g. 1.27.1.2). Empty = latest.
+    required: false
+    default: ''
+  install-test-nginx:
+    description: Whether to install Test::Nginx (needed for prove-based tests)
+    required: false
+    default: 'true'
+
+runs:
+  using: composite
+  steps:
+    - name: Checkout lua-yar
+      uses: actions/checkout@v4
+      with:
+        repository: fangfengxiang/lua-yar
+        path: lua-yar
+
+    - name: Install OpenResty, OPM, and LuaRocks
+      shell: bash
+      run: |
+        wget -qO - https://openresty.org/package/pubkey.gpg \
+          | sudo gpg --dearmor -o /usr/share/keyrings/openresty.gpg
+        codename=$(lsb_release -sc)
+        echo "deb [signed-by=/usr/share/keyrings/openresty.gpg] http://openresty.org/package/ubuntu $codename main" \
+          | sudo tee /etc/apt/sources.list.d/openresty.list
+        sudo apt-get update -qq
+        if [ -n "${{ inputs.openresty-version }}" ]; then
+          # openresty / openresty-resty / openresty-opm 必须版本同步：
+          # opm 的 Depends: openresty (>= X)、openresty-resty (>= X)，
+          # 若只 pin 主包，opm/resty 默认选 latest → 要求 latest openresty
+          # → 与 pin 的旧版本冲突 (held broken packages)。三个包同版本 pin 即自洽。
+          sudo apt-get install -y -qq \
+            openresty=${{ inputs.openresty-version }}* \
+            openresty-resty=${{ inputs.openresty-version }}* \
+            openresty-opm=${{ inputs.openresty-version }}*
+          echo "Installed OpenResty ${{ inputs.openresty-version }}"
+        else
+          sudo apt-get install -y -qq openresty openresty-opm
+        fi
+        sudo apt-get install -y -qq luarocks
+        openresty -V 2>&1 | head -5
+
+    - name: Install lua-yar dependency via LuaRocks
+      shell: bash
+      run: |
+        cd lua-yar
+        # Use OpenResty's bundled luajit (Lua 5.1) as the target interpreter.
+        # Pure-Lua rock → installed to /usr/local/share/lua/5.1/, which is on
+        # OpenResty's default package.path, so require("yar") resolves natively
+        # in both `resty` CLI and nginx/luajit without extra LUA_PATH hacks.
+        sudo luarocks --lua-dir /usr/local/openresty/luajit make
+        /usr/local/openresty/luajit/bin/luajit -e 'require("yar"); print("lua-yar require OK")'
+
+    - name: Install test-nginx
+      if: inputs.install-test-nginx == 'true'
+      shell: bash
+      run: |
+        sudo apt-get install -y -qq cpanminus
+        sudo cpanm --notest Test::Nginx
+
+    - name: Setup paths
+      shell: bash
+      run: |
+        echo "/usr/local/openresty/bin" >> $GITHUB_PATH
+        echo "/usr/local/openresty/nginx/sbin" >> $GITHUB_PATH
+        # Project's own lib (resty.yar) via LUA_PATH; lua-yar resolves from
+        # the LuaRocks system tree installed above.
+        echo "LUA_PATH=$PWD/lib/?.lua;$PWD/lib/?/init.lua;;" >> $GITHUB_ENV

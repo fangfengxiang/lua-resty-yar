@@ -1,0 +1,142 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+
+  # ── Stage 1: Lint (gate) ──────────────────────────────────────────────
+  # 代码格式化 + 静态分析，必须通过才能进入后续阶段
+  # StyLua = formatting convention, Luacheck = syntax/static analysis
+  lint:
+    name: Lint (Formatting + Static Analysis)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: StyLua format check
+        uses: JohnnyMorganz/stylua-action@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          version: latest
+          args: --check lib/ t/
+      - name: Install luacheck
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq luarocks
+          sudo luarocks install luacheck
+      - name: Luacheck static analysis
+        run: luacheck lib/
+
+  # ── Stage 2: Convention (gate) ────────────────────────────────────────
+  # 注释规范 + 语法规范检查，对标 lua-yar 的规范要求
+  # 检查：内联 setmetatable、工厂方法冒号调用、公开函数缺文档注释、
+  #       error() level 常量化、双语注释顺序
+  convention:
+    name: Convention (Comments + Syntax)
+    needs: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install luacheck
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq luarocks
+          sudo luarocks install luacheck
+      - name: Luacheck with strict conventions
+        run: luacheck lib/ --codes --no-unused
+      - name: Comment + syntax convention checks
+        run: bash scripts/check_conventions.sh
+
+  # ── Stage 3: OPM Build (parallel with Test) ──────────────────────────
+  # 打包校验：验证 dist.ini + 依赖解析，属静态验证范畴，不需等测试跑完
+  opm-build:
+    name: OPM Build
+    needs: convention
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-test
+        with:
+          install-test-nginx: 'false'
+      - name: OPM build validation
+        run: |
+          printf 'github_account=fangfengxiang\ndownload_server=https://opm.openresty.org\n' > ~/.opmrc
+          opm build
+
+  # ── Stage 3: Test (OpenResty matrix, parallel with OPM Build) ────────
+  # 三个 OpenResty 版本并行测试，需 Convention 通过
+  test:
+    name: Test (OpenResty ${{ matrix.openresty }})
+    needs: convention
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        openresty:
+          - "1.25.3.2"   # jammy 源最低可用线（1.21.4.3 未为 jammy 构建）
+          - "1.27.1.2"
+          - "1.29.2.5"   # 1.29 线最新 patch，覆盖最旧→最新跨度
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-test
+        with:
+          openresty-version: ${{ matrix.openresty }}
+      - name: Run full test suite
+        run: |
+          export TEST_NGINX_BINARY=/usr/local/openresty/nginx/sbin/nginx
+          prove -I$HOME/.cpanm/lib/lib/perl5 t/
+
+  # ── Stage 4: Coverage (parallel with Benchmark) ──────────────────────
+  # 需 Test 通过，跑 luacov 覆盖率收集
+  coverage:
+    name: Coverage
+    needs: test
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-test
+        with:
+          install-test-nginx: 'true'
+      - name: Install luacov
+        run: sudo luarocks --lua-dir /usr/local/openresty/luajit install luacov
+      - name: Inject luacov into tests
+        run: |
+          echo "LUA_PATH=$PWD/t/?.lua;$LUA_PATH" >> $GITHUB_ENV
+          find t/ -name '*.t' -exec \
+            sed -i 's/init_by_lua_block {/init_by_lua_block { require("luacov_init"); /g' {} +
+      - name: Run tests with coverage
+        run: |
+          export TEST_NGINX_BINARY=/usr/local/openresty/nginx/sbin/nginx
+          prove -I$HOME/.cpanm/lib/lib/perl5 t/
+      - name: Generate coverage report
+        run: luacov lib/resty/yar/
+      - name: Restore test files
+        if: always()
+        run: git checkout t/
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          files: ./luacov.report.out
+          flags: openresty
+          fail_ci_if_error: false
+
+  # ── Stage 4: Benchmark (parallel with Coverage) ──────────────────────
+  # 需 Test 通过，跑序列化性能基准
+  benchmark:
+    name: Benchmark
+    needs: test
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-test
+        with:
+          install-test-nginx: 'false'
+      - name: Run benchmark
+        run: resty t/benchmark/serialization.lua
