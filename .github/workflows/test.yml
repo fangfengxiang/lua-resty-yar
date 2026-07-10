@@ -10,6 +10,9 @@ jobs:
   test:
     runs-on: ubuntu-latest
 
+    env:
+      OPENRESTY_PREFIX: /usr/local/openresty
+
     steps:
       - name: Checkout lua-resty-yar
         uses: actions/checkout@v4
@@ -21,13 +24,17 @@ jobs:
           path: lua-yar
 
       - name: Install OpenResty
-        uses: openresty/openresty-action@v1
-        with:
-          version: 1.25.3.1
+        run: |
+          wget -qO - https://openresty.org/package/pubkey.gpg \
+            | sudo gpg --dearmor -o /usr/share/keyrings/openresty.gpg
+          codename=$(lsb_release -sc)
+          echo "deb [signed-by=/usr/share/keyrings/openresty.gpg] http://openresty.org/package/ubuntu $codename main" \
+            | sudo tee /etc/apt/sources.list.d/openresty.list
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq openresty
 
       - name: Install luacheck
         run: |
-          sudo apt-get update -qq
           sudo apt-get install -y -qq luarocks
           luarocks install luacheck
 
@@ -36,8 +43,10 @@ jobs:
           sudo apt-get install -y -qq cpanminus
           sudo cpanm --notest Test::Nginx
 
-      - name: Setup Lua paths
+      - name: Setup paths
         run: |
+          echo "$OPENRESTY_PREFIX/bin" >> $GITHUB_PATH
+          echo "$OPENRESTY_PREFIX/nginx/sbin" >> $GITHUB_PATH
           echo "LUA_PATH=$PWD/lua-yar/src/?.lua;$PWD/lua-yar/src/?/init.lua;;" >> $GITHUB_ENV
 
       - name: Lint
