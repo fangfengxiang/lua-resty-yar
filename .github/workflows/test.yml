@@ -58,4 +58,6 @@ jobs:
           LUA_PATH: ${{ env.LUA_PATH }}
 
       - name: OPM build validation
-        run: opm build
+        run: |
+          echo "github_account=fangfengxiang" > ~/.opmrc
+          opm build
