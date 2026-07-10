@@ -163,7 +163,7 @@ ct=application/octet-stream
 --- no_error_log
 [error]
 
-=== TEST 6: RPC method error returns 500
+=== TEST 6: RPC method error returns YAR error response
 --- main_config
     env LUA_PATH;
 --- http_config
@@ -194,14 +194,17 @@ ct=application/octet-stream
                 body = msg,
             })
             ngx.say("status=" .. res.status)
-            ngx.say("body=" .. res.body)
+            -- lua-yar 的 handle_message 内部 pcall 用户方法，
+            -- 返回 YAR 错误响应 (s=1) 而非抛出异常，HTTP 层为 200。
+            local payload = Protocol.parse(res.body, pk)
+            ngx.say("s=" .. payload.s)
         }
     }
 --- request
 GET /t
 --- response_body
-status=500
-body=internal error
---- error_log
-handle_message error
+status=200
+s=1
+--- no_error_log
+[error]
 

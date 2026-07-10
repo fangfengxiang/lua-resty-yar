@@ -24,6 +24,12 @@ local init = require("resty.yar")
 local Yar  = init.Yar
 local Packager = Yar.Packager
 
+-- HTTP 状态码常量
+-- 不直接使用 ngx.HTTP_* 常量，因为某些 OpenResty 版本/构建中这些常量可能为 nil。
+local HTTP_METHOD_NOT_ALLOWED = 405
+local HTTP_BAD_REQUEST       = 400
+local HTTP_INTERNAL_SERVER_ERROR = 500
+
 local _M = {}
 
 --- content_by_lua 入口：读 body -> handle_message -> 写响应
@@ -41,7 +47,7 @@ function _M.serve()
 
     -- 非 POST/GET 拒绝
     if method ~= "POST" then
-        ngx.status = ngx.HTTP_METHOD_NOT_ALLOWED
+        ngx.status = HTTP_METHOD_NOT_ALLOWED
         ngx.header["Content-Type"] = "text/plain"
         ngx.say("method not allowed")
         return
@@ -65,7 +71,7 @@ function _M.serve()
 
     -- 空请求体
     if not data or data == "" then
-        ngx.status = ngx.HTTP_BAD_REQUEST
+        ngx.status = HTTP_BAD_REQUEST
         ngx.header["Content-Type"] = "text/plain"
         ngx.say("empty body")
         return
@@ -76,7 +82,7 @@ function _M.serve()
     local ok, resp = pcall(server.handle_message, server, data)
     if not ok then
         ngx.log(ngx.ERR, "[resty.yar http] handle_message error: " .. tostring(resp))
-        ngx.status = ngx.HTTP_INTERNAL_SERVER_ERROR
+        ngx.status = HTTP_INTERNAL_SERVER_ERROR
         ngx.header["Content-Type"] = "text/plain"
         ngx.say("internal error")
         return
