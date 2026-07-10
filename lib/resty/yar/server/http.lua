@@ -25,10 +25,10 @@ local Yar  = init.Yar
 local Packager = Yar.Packager
 
 -- HTTP 状态码常量
--- 不直接使用 ngx.HTTP_* 常量，因为某些 OpenResty 版本/构建中这些常量可能为 nil。
-local HTTP_METHOD_NOT_ALLOWED = 405
-local HTTP_BAD_REQUEST       = 400
-local HTTP_INTERNAL_SERVER_ERROR = 500
+-- 优先使用 ngx.HTTP_* 常量；某些 OpenResty 版本/构建中可能为 nil，回退到数值。
+local HTTP_METHOD_NOT_ALLOWED     = ngx.HTTP_METHOD_NOT_ALLOWED     or 405
+local HTTP_BAD_REQUEST            = ngx.HTTP_BAD_REQUEST            or 400
+local HTTP_INTERNAL_SERVER_ERROR  = ngx.HTTP_INTERNAL_SERVER_ERROR  or 500
 
 local _M = {}
 
