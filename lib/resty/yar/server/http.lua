@@ -32,9 +32,15 @@ local HTTP_INTERNAL_SERVER_ERROR  = ngx.HTTP_INTERNAL_SERVER_ERROR  or 500
 
 local _M = {}
 
+-- 模块级缓存 Server 实例（避免每请求调用 get_http_server()）
+local _http_server
+
 --- content_by_lua 入口：读 body -> handle_message -> 写响应
 function _M.serve()
-    local server = init.get_http_server()
+    if not _http_server then
+        _http_server = init.get_http_server()
+    end
+    local server = _http_server
     local method = ngx.req.get_method()
 
     -- GET：内省，返回方法列表
