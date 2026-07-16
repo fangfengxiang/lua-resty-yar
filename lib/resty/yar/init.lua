@@ -35,6 +35,7 @@ _M.VERSION = "0.1.0"
 local Server = Yar.Server
 local Client = Yar.Client
 local Log = Yar.Log
+local Packager = Yar.Packager
 
 -- 默认配置
 local default_config = {
@@ -53,6 +54,8 @@ local default_config = {
     pool_size        = 30,      -- cosocket 连接池容量
     max_body_len     = 10 * 1024 * 1024,  -- 最大请求体长度（bytes，10MB）
     ssl_verify       = true,              -- HTTPS 证书验证（生产环境必须开启）
+    resolve          = "",                -- 自定义 DNS 解析 IP（空=用系统 DNS）
+    proxy            = "",                -- HTTP 代理地址（空=直连）
 }
 
 local config = {}
@@ -90,9 +93,10 @@ local LOG_LEVEL_MAP = {
 function _M.setup(opts)
     opts = opts or {}
 
-    -- 合并用户配置（service/on_worker_init/log_level 不混入 config）
+    -- 合并用户配置（service/on_worker_init/log_level/use_* 不混入 config）
     for k, v in pairs(opts) do
-        if k ~= "service" and k ~= "on_worker_init" and k ~= "log_level" then
+        if k ~= "service" and k ~= "on_worker_init" and k ~= "log_level"
+           and k ~= "use_cjson" and k ~= "use_cmsgpack" and k ~= "use_resty_http" then
             config[k] = v
         end
     end
@@ -126,6 +130,74 @@ function _M.setup(opts)
 
     -- 7. 缓存 worker init 回调
     _on_worker_init = opts.on_worker_init
+
+    -- 8. 可选：注册 cjson C 扩展加速器（替代纯 Lua JSON 编解码）
+    if opts.use_cjson then
+        local ok_cjson, cjson = pcall(require, "cjson")
+        if ok_cjson then
+            local adapter, cerr = Packager.from_codec("JSON", cjson)
+            if not adapter then
+                ngx.log(ngx.WARN, "[resty.yar] cjson codec registration failed: " .. tostring(cerr))
+            end
+        else
+            ngx.log(ngx.WARN, "[resty.yar] use_cjson=true but cjson not available: " .. tostring(cjson))
+        end
+    end
+
+    -- 9. 可选：注册 cmsgpack C 扩展加速器（替代纯 Lua Msgpack 编解码）
+    if opts.use_cmsgpack then
+        local ok_cmp, cmsgpack = pcall(require, "cmsgpack")
+        if ok_cmp then
+            local adapter, cerr = Packager.from_codec("MSGPACK", cmsgpack)
+            if not adapter then
+                ngx.log(ngx.WARN, "[resty.yar] cmsgpack codec registration failed: " .. tostring(cerr))
+            end
+        else
+            ngx.log(ngx.WARN, "[resty.yar] use_cmsgpack=true but cmsgpack not available: " .. tostring(cmsgpack))
+        end
+    end
+
+    -- 10. 可选：注入 lua-resty-http provider（替代默认 cosocket 手动 HTTP 实现）
+    -- 注意：request_uri 不原生支持 proxy/resolve，启用时这些选项被忽略并记录 WARN
+    if opts.use_resty_http then
+        local ok_http, http = pcall(require, "resty.http")
+        if ok_http then
+            Client.set_http_provider(function(url, prov_opts)
+                if prov_opts.proxy and prov_opts.proxy ~= "" then
+                    ngx.log(ngx.WARN, "[resty.yar] proxy option not supported in resty-http provider mode")
+                end
+                if prov_opts.resolve and prov_opts.resolve ~= "" then
+                    ngx.log(ngx.WARN, "[resty.yar] resolve option not supported in resty-http provider mode")
+                end
+                local httpc = http.new()
+                local ka = prov_opts.keepalive or {}
+                local res, err = httpc:request_uri(url, {
+                    method           = prov_opts.method or "POST",
+                    body             = prov_opts.body,
+                    headers          = prov_opts.headers,
+                    ssl_verify        = prov_opts.ssl_verify ~= false,
+                    connect_timeout  = prov_opts.connect_timeout,
+                    send_timeout      = prov_opts.timeout,
+                    read_timeout      = prov_opts.timeout,
+                    timeout           = prov_opts.timeout,
+                    keepalive_timeout = ka.idle_timeout,
+                    keepalive_pool    = ka.pool_size,
+                })
+                if not res then
+                    return nil, err
+                end
+                if res.status ~= 200 then
+                    return nil, "http status: " .. res.status
+                end
+                if not res.body then
+                    return nil, "empty response body (status " .. res.status .. ")"
+                end
+                return res.body
+            end)
+        else
+            ngx.log(ngx.WARN, "[resty.yar] use_resty_http=true but resty.http not available: " .. tostring(http))
+        end
+    end
 
     return _M
 end
@@ -174,7 +246,7 @@ end
 
 --- 创建客户端实例（每次新建，配置从 setup() 预填）
 -- @param uri string 服务地址，如 http://host/api 或 tcp://host:port
--- @param opts table|nil per-client 选项覆盖（timeout/packager/ssl_verify/headers 等）
+-- @param opts table|nil per-client 选项覆盖（timeout/packager/ssl_verify/headers/resolve/proxy 等）
 -- @return Yar.Client 实例
 function _M.new_client(uri, opts)
     if not _server then
@@ -195,6 +267,8 @@ function _M.new_client(uri, opts)
             ssl_verify      = ssl_verify,
             headers         = opts.headers,
             persistent      = opts.persistent,
+            resolve         = opts.resolve or config.resolve,
+            proxy           = opts.proxy   or config.proxy,
             keepalive = {
                 idle_timeout = opts.keepalive_idle or config.keepalive_idle,
                 pool_size    = opts.pool_size      or config.pool_size,
