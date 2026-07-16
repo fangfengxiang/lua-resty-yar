@@ -153,11 +153,17 @@ function _M.new_client(uri, opts)
     opts = opts or {}
     local client = Client.new(uri)
     client:set_options({
-        connect_timeout  = opts.connect_timeout  or config.connect_timeout,
-        timeout          = opts.timeout          or config.client_timeout,
-        packager         = opts.packager         or config.packager,
-        keepalive_idle   = opts.keepalive_idle   or config.keepalive_idle,
-        pool_size         = opts.pool_size         or config.pool_size,
+        transport = {
+            timeout         = opts.timeout          or config.client_timeout,
+            connect_timeout = opts.connect_timeout  or config.connect_timeout,
+            keepalive = {
+                idle_timeout = opts.keepalive_idle or config.keepalive_idle,
+                pool_size    = opts.pool_size      or config.pool_size,
+            },
+        },
+        protocol = {
+            packager = opts.packager or config.packager,
+        },
     })
     return client
 end

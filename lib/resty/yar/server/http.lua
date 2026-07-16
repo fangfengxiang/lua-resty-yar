@@ -79,9 +79,17 @@ function _M.serve()
 
     -- 核心：调用 lua-yar 的 handle_message（纯协议函数，无 I/O，reentrant）
     -- pcall 保护：RPC 方法抛错时返回 500，避免未处理异常
-    local ok, resp = pcall(server.handle_message, server, data)
+    local ok, resp, err = pcall(server.handle_message, server, data)
     if not ok then
-        ngx.log(ngx.ERR, "[resty.yar http] handle_message error: " .. tostring(resp))
+        ngx.log(ngx.ERR, "[resty.yar http] handle_message panic: " .. tostring(resp))
+        ngx.status = HTTP_INTERNAL_SERVER_ERROR
+        ngx.header["Content-Type"] = "text/plain"
+        ngx.say("internal error")
+        return
+    end
+    -- handle_message 渲染失败时返回 nil, err（非异常），pcall 的 ok=true 但 resp=nil
+    if not resp then
+        ngx.log(ngx.ERR, "[resty.yar http] handle_message returned nil: " .. tostring(err))
         ngx.status = HTTP_INTERNAL_SERVER_ERROR
         ngx.header["Content-Type"] = "text/plain"
         ngx.say("internal error")
