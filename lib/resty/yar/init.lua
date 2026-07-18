@@ -30,6 +30,10 @@ end
 local _M = {}
 _M.Yar = Yar
 _M.VERSION = "0.1.0"
+-- 导出常用符号，用户无需直接 require lua-yar
+_M.Error            = Yar.Error            -- 结构化错误（err.code 程序化匹配）
+_M.PACKAGER_JSON    = Yar.PACKAGER_JSON    -- "JSON" 打包器名称
+_M.PACKAGER_MSGPACK = Yar.PACKAGER_MSGPACK -- "MSGPACK" 打包器名称
 
 -- lua-yar 模块引用缓存（减少热路径表查找）
 local Server = Yar.Server
@@ -282,7 +286,7 @@ end
 
 --- 创建客户端实例（每次新建，配置从 setup() 预填）
 -- @param uri string 服务地址，如 http://host/api 或 tcp://host:port
--- @param opts table|nil per-client 选项覆盖（timeout/packager/ssl_verify/headers/resolve/proxy 等）
+-- @param opts table|nil per-client 选项覆盖（timeout/packager/ssl_verify/headers/resolve/proxy/hooks 等）
 -- @return Yar.Client 实例
 function _M.new_client(uri, opts)
     if not _server then
@@ -295,16 +299,16 @@ function _M.new_client(uri, opts)
     if ssl_verify == nil then
         ssl_verify = config.ssl_verify
     end
-    client:set_options({
+    local client_opts = {
         transport = {
             timeout         = opts.timeout          or config.client_timeout,
             connect_timeout = opts.connect_timeout  or config.connect_timeout,
             max_body_len    = opts.max_body_len     or config.max_body_len,
-            ssl_verify      = ssl_verify,
-            headers         = opts.headers,
-            persistent      = opts.persistent,
-            resolve         = opts.resolve or config.resolve,
-            proxy           = opts.proxy   or config.proxy,
+            ssl_verify       = ssl_verify,
+            headers          = opts.headers,
+            persistent       = opts.persistent,
+            resolve          = opts.resolve or config.resolve,
+            proxy            = opts.proxy   or config.proxy,
             keepalive = {
                 idle_timeout = opts.keepalive_idle or config.keepalive_idle,
                 pool_size    = opts.pool_size      or config.pool_size,
@@ -313,7 +317,10 @@ function _M.new_client(uri, opts)
         protocol = {
             packager = opts.packager or config.packager,
         },
-    })
+    }
+    -- hooks 条件传递：仅当非 nil 时传入；DEFAULT_OPTIONS 无 hooks 键，不传则保持 nil（call() 中 no-op）
+    if opts.hooks then client_opts.hooks = opts.hooks end
+    client:set_options(client_opts)
     return client
 end
 
