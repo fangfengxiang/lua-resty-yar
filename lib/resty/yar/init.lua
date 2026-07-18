@@ -68,15 +68,30 @@ local _server
 local _tcp_server
 local _tcp_service  -- 供 get_tcp_server() 延迟创建
 local _on_worker_init
+local _server_opts  -- setup() 阶段构建的 server 选项，供 get_tcp_server() 同步给 core
 local _client_cache = {}   -- uri -> Yar.Client（persistent 模式 worker 内复用）
 setmetatable(_client_cache, {__mode = "v"})  -- 弱值表，允许 GC 回收未引用的客户端包装器
 
--- lua-yar Log 级别 → ngx.log 级别映射
+-- 日志级别映射：lua-yar Log 级别 → nginx 日志级别
 local LOG_LEVEL_MAP = {
     [Log.DEBUG] = ngx.DEBUG,
     [Log.INFO]  = ngx.INFO,
     [Log.WARN]  = ngx.WARN,
     [Log.ERROR] = ngx.ERR,
+}
+
+-- 不混入 config 的键（非连接级参数：service/回调/日志/开关/hooks/depth_limits）
+-- 用 set 查找替代链式 and 条件，O(1) 且新增排除键只需加一行
+local EXCLUDE_FROM_CONFIG = {
+    service           = true,
+    on_worker_init    = true,
+    log_level         = true,
+    use_cjson         = true,
+    use_cmsgpack      = true,
+    use_resty_http    = true,
+    hooks             = true,
+    json_max_depth    = true,
+    msgpack_max_depth = true,
 }
 
 --- 初始化：注入 cosocket + 注入 log writer + 创建实例 + 合并配置
@@ -89,14 +104,16 @@ local LOG_LEVEL_MAP = {
 --       connect_timeout = 2000,
 --       log_level       = Yar.Log.DEBUG,
 --       on_worker_init  = function() ... end,
+--       hooks           = { on_request = fn, on_response = fn },
+--       json_max_depth  = 100,
+--       msgpack_max_depth = 100,
 --   }
 function _M.setup(opts)
     opts = opts or {}
 
-    -- 合并用户配置（service/on_worker_init/log_level/use_* 不混入 config）
+    -- 合并用户配置（EXCLUDE_FROM_CONFIG 中的键不混入 config）
     for k, v in pairs(opts) do
-        if k ~= "service" and k ~= "on_worker_init" and k ~= "log_level"
-           and k ~= "use_cjson" and k ~= "use_cmsgpack" and k ~= "use_resty_http" then
+        if not EXCLUDE_FROM_CONFIG[k] then
             config[k] = v
         end
     end
@@ -123,7 +140,16 @@ function _M.setup(opts)
 
     -- 5. 创建进程级 Server 实例
     _server = Server.new(service)
-    _server:set_options({ packager = config.packager, timeout = config.timeout })
+    local server_opts = {
+        packager     = config.packager,
+        timeout      = config.timeout,
+        max_body_len = config.max_body_len,
+    }
+    if opts.hooks then server_opts.hooks = opts.hooks end
+    if opts.json_max_depth then server_opts.json_max_depth = opts.json_max_depth end
+    if opts.msgpack_max_depth then server_opts.msgpack_max_depth = opts.msgpack_max_depth end
+    _server:set_options(server_opts)
+    _server_opts = server_opts  -- 供 get_tcp_server() 委托给 core Server
 
     -- 6. 缓存 service 供 TcpServer 延迟创建（纯 HTTP 场景不加载 TCP 模块）
     _tcp_service = service
@@ -212,6 +238,8 @@ end
 
 --- 获取进程级复用的 TcpServer 实例（TCP stream 场景）
 -- 延迟加载：纯 HTTP 场景不 require yar.server.tcp 模块
+-- 注意：TcpServer:set_options 仅委托 packager 给 core，max_body_len/hooks 需
+-- 显式同步给 core Server，否则 framing 允许 10MB 但 core 拒绝 >1MB、hooks 不生效。
 function _M.get_tcp_server()
     if not _tcp_server then
         if not _server then
@@ -221,7 +249,15 @@ function _M.get_tcp_server()
         local TcpServer = require("yar.server.tcp")
         ---@diagnostic enable: different-requires
         _tcp_server = TcpServer.new(_tcp_service)
-        _tcp_server:set_options({ packager = config.packager, timeout = config.timeout })
+        _tcp_server:set_options({
+            packager     = config.packager,
+            timeout      = config.timeout,
+            max_body_len = config.max_body_len,
+        })
+        -- 同步 core-relevant 选项给内部 Server（lua-yar TcpServer 不自动委托）
+        local core_opts = { max_body_len = config.max_body_len }
+        if _server_opts.hooks then core_opts.hooks = _server_opts.hooks end
+        _tcp_server.core:set_options(core_opts)
     end
     return _tcp_server
 end
