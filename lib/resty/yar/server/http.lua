@@ -24,21 +24,31 @@ local init = require("resty.yar")
 local Yar  = init.Yar
 local Packager = Yar.Packager
 
+-- Framing 常量（HEADER_TOTAL = 90 = packager(8) + header(82)）
+-- lua-yar 未通过公共 API 导出 Framing，直接 require 内部协议模块
+---@diagnostic disable: different-requires
+local ok_framing, Framing = pcall(require, "yar.protocol.framing")
+---@diagnostic enable: different-requires
+local HEADER_TOTAL = (ok_framing and Framing.HEADER_TOTAL) or 90  -- 防御性回退
+
 -- HTTP 状态码常量
 -- 优先使用 ngx.HTTP_* 常量；某些 OpenResty 版本/构建中可能为 nil，回退到数值。
-local HTTP_METHOD_NOT_ALLOWED     = ngx.HTTP_METHOD_NOT_ALLOWED     or 405
-local HTTP_BAD_REQUEST            = ngx.HTTP_BAD_REQUEST            or 400
-local HTTP_INTERNAL_SERVER_ERROR  = ngx.HTTP_INTERNAL_SERVER_ERROR  or 500
+local HTTP_METHOD_NOT_ALLOWED        = ngx.HTTP_METHOD_NOT_ALLOWED        or 405
+local HTTP_BAD_REQUEST               = ngx.HTTP_BAD_REQUEST               or 400
+local HTTP_REQUEST_ENTITY_TOO_LARGE  = ngx.HTTP_REQUEST_ENTITY_TOO_LARGE  or 413
+local HTTP_INTERNAL_SERVER_ERROR     = ngx.HTTP_INTERNAL_SERVER_ERROR     or 500
 
 local _M = {}
 
--- 模块级缓存 Server 实例（避免每请求调用 get_http_server()）
+-- 模块级缓存 Server 实例和 max_body_len（避免每请求调用 get_http_server/get_config）
 local _http_server
+local _max_body_len
 
 --- content_by_lua 入口：读 body -> handle_message -> 写响应
 function _M.serve()
     if not _http_server then
         _http_server = init.get_http_server()
+        _max_body_len = init.get_config().max_body_len
     end
     local server = _http_server
     local method = ngx.req.get_method()
@@ -80,6 +90,15 @@ function _M.serve()
         ngx.status = HTTP_BAD_REQUEST
         ngx.header["Content-Type"] = "text/plain"
         ngx.say("empty body")
+        return
+    end
+
+    -- 防御性 body 长度预检：超限返回 413，避免不必要的协议解析
+    -- 阈值与 lua-yar handle_message 内部校验一致（max_body_len + HEADER_TOTAL）
+    if #data > _max_body_len + HEADER_TOTAL then
+        ngx.status = HTTP_REQUEST_ENTITY_TOO_LARGE
+        ngx.header["Content-Type"] = "text/plain"
+        ngx.say("body too large: " .. #data .. " bytes (max " .. _max_body_len .. ")")
         return
     end
 

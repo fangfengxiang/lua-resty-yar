@@ -9,4 +9,5 @@ max_line_length = 120
 -- ngx_lua std 未包含的 ngx 字段补充声明
 globals = {
     "ngx.HTTP_METHOD_NOT_ALLOWED",
+    "ngx.HTTP_REQUEST_ENTITY_TOO_LARGE",
 }
