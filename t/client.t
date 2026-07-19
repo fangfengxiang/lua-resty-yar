@@ -1,7 +1,7 @@
 use Test::Nginx::Socket::Lua::Stream;
 
 repeat_each(2);
-plan tests => repeat_each() * 15;
+plan tests => repeat_each() * 27;
 
 run_tests();
 
@@ -186,5 +186,86 @@ GET /yartest
 --- response_body
 client_timeout=10000
 global_client_timeout=3000
+--- no_error_log
+[error]
+
+=== TEST 6: client hooks fire on call
+--- main_config
+    env LUA_PATH;
+--- http_config
+    lua_package_path ";;";
+    init_by_lua_block {
+        require("resty.yar").setup {
+            service = { add = function(a, b) return a + b end }
+        }
+    }
+--- config
+    location /api {
+        content_by_lua_block {
+            require("resty.yar.server.http").serve()
+        }
+    }
+    location /yartest {
+        content_by_lua_block {
+            local yar = require("resty.yar")
+            local calls = {}
+            local client = yar.new_client("http://127.0.0.1:1984/api", {
+                hooks = {
+                    on_request = function(method, params)
+                        calls.req = method
+                    end,
+                    on_response = function(method, retval, err)
+                        calls.resp = method
+                        calls.retval = retval
+                    end,
+                },
+            })
+            local result = client:call("add", { 5, 5 })
+            ngx.say("result=" .. tostring(result))
+            ngx.say("req=" .. tostring(calls.req))
+            ngx.say("resp=" .. tostring(calls.resp))
+            ngx.say("retval=" .. tostring(calls.retval))
+        }
+    }
+--- request
+GET /yartest
+--- response_body
+result=10
+req=add
+resp=add
+retval=10
+--- no_error_log
+[error]
+
+=== TEST 7: Error and PACKAGER constants are exported
+--- main_config
+    env LUA_PATH;
+--- http_config
+    lua_package_path ";;";
+    init_by_lua_block {
+        require("resty.yar").setup()
+    }
+--- config
+    location /yartest {
+        content_by_lua_block {
+            local yar = require("resty.yar")
+            ngx.say("json=" .. yar.PACKAGER_JSON)
+            ngx.say("msgpack=" .. yar.PACKAGER_MSGPACK)
+            ngx.say("transport=" .. tostring(yar.Error.TRANSPORT))
+            ngx.say("timeout=" .. tostring(yar.Error.TIMEOUT))
+            local e = yar.Error.new(yar.Error.TRANSPORT, "test")
+            ngx.say("err_code=" .. tostring(e.code))
+            ngx.say("err_msg=" .. e.message)
+        }
+    }
+--- request
+GET /yartest
+--- response_body
+json=JSON
+msgpack=MSGPACK
+transport=TRANSPORT
+timeout=TIMEOUT
+err_code=TRANSPORT
+err_msg=test
 --- no_error_log
 [error]
