@@ -1,0 +1,67 @@
+name: Test
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+concurrency:
+  group: test-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    env:
+      OPENRESTY_PREFIX: /usr/local/openresty
+
+    steps:
+      - name: Checkout lua-resty-yar
+        uses: actions/checkout@v4
+
+      - name: Checkout lua-yar
+        uses: actions/checkout@v4
+        with:
+          repository: fangfengxiang/lua-yar
+          path: lua-yar
+
+      - name: Install OpenResty
+        run: |
+          wget -qO - https://openresty.org/package/pubkey.gpg \
+            | sudo gpg --dearmor -o /usr/share/keyrings/openresty.gpg
+          codename=$(lsb_release -sc)
+          echo "deb [signed-by=/usr/share/keyrings/openresty.gpg] http://openresty.org/package/ubuntu $codename main" \
+            | sudo tee /etc/apt/sources.list.d/openresty.list
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq openresty
+
+      - name: Install luacheck
+        run: |
+          sudo apt-get install -y -qq luarocks
+          sudo luarocks install luacheck
+
+      - name: Install test-nginx
+        run: |
+          sudo apt-get install -y -qq cpanminus
+          sudo cpanm --notest Test::Nginx
+
+      - name: Setup paths
+        run: |
+          echo "$OPENRESTY_PREFIX/bin" >> $GITHUB_PATH
+          echo "$OPENRESTY_PREFIX/nginx/sbin" >> $GITHUB_PATH
+          echo "LUA_PATH=$PWD/lib/?.lua;$PWD/lib/?/init.lua;$PWD/lua-yar/src/?.lua;$PWD/lua-yar/src/?/init.lua;;" >> $GITHUB_ENV
+
+      - name: Lint
+        run: luacheck lib/
+
+      - name: Test
+        run: prove -r t
+        env:
+          LUA_PATH: ${{ env.LUA_PATH }}
+
+      - name: OPM build validation
+        run: |
+          printf 'github_account=fangfengxiang\ndownload_server=https://opm.openresty.org\n' > ~/.opmrc
+          opm build

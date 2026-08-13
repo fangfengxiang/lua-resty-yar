@@ -1,0 +1,24 @@
+cff-version: 1.2.0
+title: lua-resty-yar
+message: "If you use this software, please cite it as below."
+type: software
+authors:
+  - given-names: fangfengxiang
+    email: fangfengxiang@gmail.com
+repository-code: "https://github.com/fangfengxiang/lua-resty-yar"
+url: "https://github.com/fangfengxiang/lua-resty-yar"
+abstract: "High-performance Yar RPC server for OpenResty. An OPM adapter layer built on lua-yar — provides cosocket injection, content_by_lua handlers, and process-level instance management for HTTP / TCP stream Yar RPC services. Interoperable with PHP Yar / yar-c."
+keywords:
+  - rpc
+  - yar
+  - openresty
+  - nginx
+  - cosocket
+  - opm
+  - lua
+  - binary-protocol
+  - high-performance
+  - adapter
+license: Apache-2.0
+version: "0.1.0"
+date-released: "2026-07-10"

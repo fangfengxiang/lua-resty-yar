@@ -1,0 +1,48 @@
+# lua-resty-yar
+
+> High-performance Yar RPC server for OpenResty. An OPM adapter layer built on lua-yar — provides cosocket injection, content_by_lua handlers, and process-level instance management for HTTP / TCP stream Yar RPC services. Interoperable with PHP Yar / yar-c.
+
+lua-resty-yar bridges the pure Lua [lua-yar](https://github.com/fangfengxiang/lua-yar) protocol library into OpenResty's non-blocking I/O runtime. It is an OPM package (OpenResty Package Manager), not a standalone protocol implementation — all protocol logic (framing, header parsing, encoding/decoding, packager registry, hooks, error classification) is delegated to lua-yar.
+
+## Quick Start
+
+```nginx
+http {
+    lua_package_path "/path/to/lua-yar/src/?.lua;/path/to/lua-yar/src/?/init.lua;;";
+
+    init_by_lua_block {
+        require("resty.yar").setup {
+            service = { add = function(a, b) return a + b end },
+        }
+    }
+
+    server {
+        listen 8888;
+        location /api {
+            content_by_lua_block { require("resty.yar.server").serve() }
+        }
+    }
+}
+```
+
+Install: `opm get fangfengxiang/lua-resty-yar` (requires lua-yar: `luarocks install lua-yar`)
+
+## Docs
+
+- [API Reference](docs/api.md): Full method signatures, option tables, module descriptions
+- [Project Positioning](docs/positioning.md): What lua-resty-yar is and isn't, architecture overview
+- [Design Decisions](docs/design/decisions.md): 11 ADR records across 4 modules
+- [Reports](docs/reports/): Evaluation, dependency audit, optimization plans
+
+## Modules
+
+- `resty.yar` — Main entry: `setup()`, `get_server()`, `new_client()`, `get_client()`, `init_worker()`
+- `resty.yar.server` — Unified server entry: `serve()` (auto-detects HTTP/stream)
+- `resty.yar.server.http` — HTTP handler: `serve()` (content_by_lua entry)
+- `resty.yar.server.tcp` — TCP stream handler: `serve()` (stream content_by_lua entry)
+- `resty.yar.client` — Client wrapper: `new()`, `get()`
+
+## Optional
+
+- [Changelog](CHANGELOG.md): version history
+- [Contributing Guide](CONTRIBUTING.md): development setup, code style, testing
