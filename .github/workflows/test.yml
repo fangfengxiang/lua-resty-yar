@@ -11,12 +11,24 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  test:
+  lint:
     runs-on: ubuntu-latest
-
     env:
       OPENRESTY_PREFIX: /usr/local/openresty
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install luacheck
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq luarocks
+          sudo luarocks install luacheck
+      - name: Lint
+        run: luacheck lib/
 
+  test:
+    runs-on: ubuntu-latest
+    env:
+      OPENRESTY_PREFIX: /usr/local/openresty
     steps:
       - name: Checkout lua-resty-yar
         uses: actions/checkout@v4
@@ -37,11 +49,6 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq openresty
 
-      - name: Install luacheck
-        run: |
-          sudo apt-get install -y -qq luarocks
-          sudo luarocks install luacheck
-
       - name: Install test-nginx
         run: |
           sudo apt-get install -y -qq cpanminus
@@ -53,11 +60,46 @@ jobs:
           echo "$OPENRESTY_PREFIX/nginx/sbin" >> $GITHUB_PATH
           echo "LUA_PATH=$PWD/lib/?.lua;$PWD/lib/?/init.lua;$PWD/lua-yar/src/?.lua;$PWD/lua-yar/src/?/init.lua;;" >> $GITHUB_ENV
 
-      - name: Lint
-        run: luacheck lib/
+      - name: BDD tests
+        run: prove -I../test-nginx/lib t/bdd.t
+        env:
+          LUA_PATH: ${{ env.LUA_PATH }}
 
-      - name: Test
-        run: prove -r t
+      - name: Functional tests
+        run: prove -I../test-nginx/lib t/functional.t
+        env:
+          LUA_PATH: ${{ env.LUA_PATH }}
+
+      - name: Integration tests
+        run: prove -I../test-nginx/lib t/integration.t
+        env:
+          LUA_PATH: ${{ env.LUA_PATH }}
+
+      - name: End-to-end tests
+        run: prove -I../test-nginx/lib t/e2e.t
+        env:
+          LUA_PATH: ${{ env.LUA_PATH }}
+
+      - name: Performance tests
+        run: prove -I../test-nginx/lib t/performance.t
+        env:
+          LUA_PATH: ${{ env.LUA_PATH }}
+
+      - name: Chaos tests
+        run: prove -I../test-nginx/lib t/chaos.t
+        env:
+          LUA_PATH: ${{ env.LUA_PATH }}
+
+      - name: Legacy tests
+        run: prove -I../test-nginx/lib t/client.t t/http.t t/tcp.t t/observability.t
+        env:
+          LUA_PATH: ${{ env.LUA_PATH }}
+
+      - name: Benchmark
+        run: |
+          $OPENRESTY_PREFIX/bin/resty \
+            --lua-path "$PWD/lib/?.lua;$PWD/lua-yar/src/?.lua;;" \
+            t/benchmark/serialization.lua
         env:
           LUA_PATH: ${{ env.LUA_PATH }}
 

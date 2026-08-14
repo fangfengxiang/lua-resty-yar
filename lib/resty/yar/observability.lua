@@ -126,12 +126,12 @@ local CTX_PARAMS_SIZE = "yar_obs_params_size"
 -- @return table hooks 表
 function _M.access_logger(opts)
     opts = opts or {}
-    local writer = opts.writer or function(level, msg)
+    local writer = opts.writer or function(_level, msg)
         ngx.log(ngx.INFO, msg)
     end
 
     return {
-        on_request = function(method, params)
+        on_request = function(_method, params)
             local ctx = ngx.ctx
             ctx[CTX_START_TIME] = ngx.now()
             ctx[CTX_PARAMS_SIZE] = estimate_size(params)
@@ -174,13 +174,13 @@ function _M.trace_middleware(opts)
     local id_gen = opts.id_generator or gen_request_id
 
     return {
-        on_request = function(method, params)
+        on_request = function(_method, _params)
             local ctx = ngx.ctx
             if not ctx.request_id then
                 ctx.request_id = id_gen()
             end
         end,
-        on_response = function(method, retval, err_obj)
+        on_response = function(_method, _retval, _err_obj)
             -- request_id 已在 on_request 注入，此处无需操作
             -- trace context 传播通过 Client 的 provider/token 选项配置
         end,
@@ -231,7 +231,7 @@ function _M.metrics_recorder(opts)
         return prefix .. "_duration_count{method=\"" .. method .. "\"}"
     end
 
-    local function record(method, retval, err_obj)
+    local function record(method, _retval, err_obj)
         local start = ngx.ctx[CTX_START_TIME] or ngx.now()
         local duration_ms = (ngx.now() - start) * 1000
         local status = error_status(err_obj)
@@ -262,7 +262,7 @@ function _M.metrics_recorder(opts)
     end
 
     local metrics = {
-        on_request = function(method, params)
+        on_request = function(_method, _params)
             ngx.ctx[CTX_START_TIME] = ngx.now()
         end,
         on_response = function(method, retval, err_obj)
