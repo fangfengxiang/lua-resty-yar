@@ -79,7 +79,7 @@ mul=56
         }
     }
 --- config
-    location /t {
+    location /yartest {
         content_by_lua_block {
             local yar = require("resty.yar")
             local c = yar.new_client("tcp://127.0.0.1:19901")
@@ -90,7 +90,7 @@ mul=56
         }
     }
 --- request
-GET /t
+GET /yartest
 --- response_body
 add=100
 greet=hello, e2e
@@ -187,7 +187,7 @@ has_err=true
             local c = yar.new_client("http://127.0.0.1:1984/api")
             local nums = {}
             for i = 1, 500 do nums[i] = i end
-            local r = c:call("sum_all", nums)
+            local r = c:call("sum_all", { nums })
             ngx.say("sum=" .. tostring(r))
         }
     }
@@ -221,13 +221,13 @@ sum=125250
             local reqs = {}
             for i = 1, 5 do
                 local req = R.new({ method = "add", params = { i, i * 10 } })
-                reqs["r" .. i] = { url = "/api", method = ngx.HTTP_POST,
-                    body = P.render(req, pk) }
+                reqs[i] = { "/api", { method = ngx.HTTP_POST,
+                    body = P.render(req, pk) } }
             end
-            local results = ngx.location.capture_multi(reqs)
+            local results = { ngx.location.capture_multi(reqs) }
             local all_ok = true
             for i = 1, 5 do
-                local pl = P.parse(results["r" .. i].body, pk)
+                local pl = P.parse(results[i].body, pk)
                 if pl.s ~= 0 or pl.r ~= i + i * 10 then
                     all_ok = false
                 end
