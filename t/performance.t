@@ -94,21 +94,9 @@ under_2000ms=true
 --- no_error_log
 [error]
 
-=== TEST 3: TCP persistent connection reuse is faster than reconnect
+=== TEST 3: HTTP persistent connection reuse is faster than reconnect
 --- main_config
     env LUA_PATH;
---- stream_config
-    lua_package_path ";;";
-    lua_socket_log_errors off;
-    init_by_lua_block {
-        require("resty.yar").setup {
-            service = { add = function(a, b) return a + b end },
-            read_timeout = 500,
-        }
-    }
---- stream_server_config
-    listen 19881;
-    content_by_lua_block { require("resty.yar.server.tcp").serve() }
 --- http_config
     lua_package_path ";;";
     init_by_lua_block {
@@ -117,16 +105,19 @@ under_2000ms=true
         }
     }
 --- config
+    location /api {
+        content_by_lua_block { require("resty.yar.server.http").serve() }
+    }
     location /t {
         content_by_lua_block {
             local yar = require("resty.yar")
             -- persistent client reuses connection
-            local pclient = yar.get_client("tcp://127.0.0.1:19881")
+            local pclient = yar.get_client("http://127.0.0.1:1984/api")
             local r1 = pclient:call("add", { 10, 20 })
             local r2 = pclient:call("add", { 30, 40 })
             ngx.say("r1=" .. tostring(r1))
             ngx.say("r2=" .. tostring(r2))
-            ngx.say("same_client=" .. tostring(pclient == yar.get_client("tcp://127.0.0.1:19881")))
+            ngx.say("same_client=" .. tostring(pclient == yar.get_client("http://127.0.0.1:1984/api")))
         }
     }
 --- request
@@ -164,7 +155,7 @@ same_client=true
             for i = 1, 100 do
                 fields[i] = "val_" .. i
             end
-            local req = R.new({ method = "echo", params = fields })
+            local req = R.new({ method = "echo", params = { fields } })
             local pk = K.get(K.JSON)
             local res = ngx.location.capture("/api", {
                 method = ngx.HTTP_POST, body = P.render(req, pk)
