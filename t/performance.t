@@ -4,7 +4,7 @@ use Test::Nginx::Socket::Lua;
 # Asserts that RPC calls complete within acceptable time thresholds.
 
 repeat_each(2);
-plan tests => repeat_each() * 5;
+plan tests => repeat_each() * 15;
 
 run_tests();
 

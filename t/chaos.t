@@ -5,7 +5,7 @@ use Test::Nginx::Socket::Lua;
 # connection issues, and boundary conditions.
 
 repeat_each(2);
-plan tests => repeat_each() * 8;
+plan tests => repeat_each() * 23;
 
 run_tests();
 

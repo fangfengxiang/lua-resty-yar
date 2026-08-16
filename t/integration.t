@@ -4,7 +4,7 @@ use Test::Nginx::Socket::Lua::Stream;
 # HTTP client+server, TCP client+server, hooks, packager switching.
 
 repeat_each(2);
-plan tests => repeat_each() * 6;
+plan tests => repeat_each() * 18;
 
 run_tests();
 

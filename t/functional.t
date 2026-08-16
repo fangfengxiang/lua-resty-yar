@@ -4,7 +4,7 @@ use Test::Nginx::Socket::Lua;
 # Tests observability helpers, client creation, config merging, Error objects.
 
 repeat_each(2);
-plan tests => repeat_each() * 7;
+plan tests => repeat_each() * 21;
 
 run_tests();
 

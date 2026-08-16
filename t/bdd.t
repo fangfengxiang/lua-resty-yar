@@ -4,7 +4,7 @@ use Test::Nginx::Socket::Lua;
 # Focus on observable behavior from the user's perspective.
 
 repeat_each(2);
-plan tests => repeat_each() * 7;
+plan tests => repeat_each() * 22;
 
 run_tests();
 
