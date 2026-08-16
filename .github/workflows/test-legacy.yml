@@ -1,0 +1,22 @@
+name: Legacy Tests
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+concurrency:
+  group: test-legacy-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-test
+      - name: Run legacy tests
+        run: prove -I../test-nginx/lib t/client.t t/http.t t/tcp.t t/observability.t
+        env:
+          LUA_PATH: ${{ env.LUA_PATH }}

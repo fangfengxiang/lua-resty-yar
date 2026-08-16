@@ -1,0 +1,22 @@
+name: BDD Tests
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+concurrency:
+  group: test-bdd-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-test
+      - name: Run BDD tests
+        run: prove -I../test-nginx/lib t/bdd.t
+        env:
+          LUA_PATH: ${{ env.LUA_PATH }}
