@@ -33,25 +33,11 @@
 
 ## 安装
 
-### OPM（推荐）
-
 ```bash
 opm get fangfengxiang/lua-resty-yar
 ```
 
-### 前置依赖：lua-yar
-
-lua-resty-yar 依赖 [lua-yar](https://github.com/fangfengxiang/lua-yar)（纯 Lua 协议库），需先安装：
-
-```bash
-# 通过 LuaRocks
-luarocks install lua-yar
-
-# 或通过 OPM
-opm install lua-yar
-```
-
-然后在 nginx 配置中确保 `lua_package_path` 包含 lua-yar 的源码路径（见快速开始）。
+依赖 [lua-yar](https://github.com/fangfengxiang/lua-yar) 已在 `dist.ini` 中声明，OPM 会自动安装。
 
 ## 快速开始
 
@@ -281,7 +267,7 @@ local pclient = require("resty.yar.client").get("tcp://host:9999")
 ### 前置条件
 
 - OpenResty >= 1.19.3.1
-- lua-yar（通过 LuaRocks 安装）
+- lua-yar（由 OPM 自动安装）
 - Perl（用于 test-nginx）
 - luacheck（用于代码检查）
 

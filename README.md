@@ -19,23 +19,11 @@ High-performance Yar RPC server for OpenResty, built on [lua-yar](https://github
 
 ## Installation
 
-### Step 1: Install lua-yar
-
-lua-resty-yar depends on [lua-yar](https://github.com/fangfengxiang/lua-yar) (pure Lua protocol library), install it first:
-
-```bash
-# via LuaRocks
-luarocks install lua-yar
-
-# or via OPM
-opm install lua-yar
-```
-
-### Step 2: Install lua-resty-yar (OPM)
-
 ```bash
 opm get fangfengxiang/lua-resty-yar
 ```
+
+The dependency [lua-yar](https://github.com/fangfengxiang/lua-yar) is declared in `dist.ini` and installed automatically by OPM.
 
 ## Quick Start
 
@@ -206,7 +194,7 @@ local pclient = require("resty.yar.client").get("tcp://host:9999")
 ### Prerequisites
 
 - OpenResty >= 1.19.3.1
-- lua-yar (via LuaRocks or OPM)
+- lua-yar (auto-installed via OPM)
 - Perl (for test-nginx)
 - luacheck (for linting)
 
