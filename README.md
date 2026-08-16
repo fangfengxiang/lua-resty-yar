@@ -1,5 +1,12 @@
 # lua-resty-yar
 
+[English](README.md) | [简体中文](README.zh.md)
+
+[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://www.apache.org/licenses/LICENSE-2.0)
+[![OPM](https://img.shields.io/badge/OPM-lua--resty--yar-blue.svg)](https://opm.openresty.org/package/fangfengxiang/lua-resty-yar/)
+[![Test](https://github.com/fangfengxiang/lua-resty-yar/actions/workflows/test.yml/badge.svg?branch=main)](https://github.com/fangfengxiang/lua-resty-yar/actions/workflows/test.yml)
+[![Release](https://img.shields.io/github/v/release/fangfengxiang/lua-resty-yar)](https://github.com/fangfengxiang/lua-resty-yar/releases)
+
 High-performance Yar RPC server for OpenResty, built on [lua-yar](https://github.com/fangfengxiang/lua-yar).
 
 ## Features
@@ -12,10 +19,16 @@ High-performance Yar RPC server for OpenResty, built on [lua-yar](https://github
 
 ## Installation
 
-### Step 1: Install lua-yar (LuaRocks)
+### Step 1: Install lua-yar
+
+lua-resty-yar depends on [lua-yar](https://github.com/fangfengxiang/lua-yar) (pure Lua protocol library), install it first:
 
 ```bash
+# via LuaRocks
 luarocks install lua-yar
+
+# or via OPM
+opm install lua-yar
 ```
 
 ### Step 2: Install lua-resty-yar (OPM)
@@ -193,7 +206,7 @@ local pclient = require("resty.yar.client").get("tcp://host:9999")
 ### Prerequisites
 
 - OpenResty >= 1.19.3.1
-- lua-yar (installed via LuaRocks)
+- lua-yar (via LuaRocks or OPM)
 - Perl (for test-nginx)
 - luacheck (for linting)
 
@@ -208,3 +221,7 @@ make test
 ```bash
 make lint
 ```
+
+## License
+
+[Apache License 2.0](LICENSE)

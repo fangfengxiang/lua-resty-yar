@@ -63,6 +63,9 @@ is_hex=true
     }
     location /t {
         content_by_lua_block {
+            local yar = require("resty.yar")
+            -- reset per-request so repeat_each(2) does not accumulate
+            yar._logs = {}
             local R = require("yar.message.request")
             local P = require("yar.protocol.protocol")
             local K = require("yar.packager.packager")
@@ -71,7 +74,6 @@ is_hex=true
             local res = ngx.location.capture("/api", {
                 method = ngx.HTTP_POST, body = P.render(req, pk)
             })
-            local yar = require("resty.yar")
             -- hook 1 failed but hook 2 (access_logger) still ran
             ngx.say("log_count=" .. #yar._logs)
             ngx.say("has_log=" .. tostring(yar._logs[1] ~= nil))
