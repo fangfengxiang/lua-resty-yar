@@ -72,7 +72,7 @@ e2=nil
         }
     }
 --- config
-    location /t {
+    location /yartest {
         content_by_lua_block {
             local yar = require("resty.yar")
             local c = yar.new_client("tcp://127.0.0.1:19891")
@@ -82,7 +82,7 @@ e2=nil
         }
     }
 --- request
-GET /t
+GET /yartest
 --- response_body
 r=12
 e=nil
@@ -262,7 +262,7 @@ has_metrics=true
         }
     }
 --- config
-    location /t {
+    location /yartest {
         content_by_lua_block {
             local yar = require("resty.yar")
             local c = yar.get_client("tcp://127.0.0.1:19892")
@@ -273,7 +273,7 @@ has_metrics=true
         }
     }
 --- request
-GET /t
+GET /yartest
 --- response_body
 r1=3
 r2=hi, yar
