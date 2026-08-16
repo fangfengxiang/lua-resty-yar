@@ -13,8 +13,6 @@ concurrency:
 jobs:
   lint:
     runs-on: ubuntu-latest
-    env:
-      OPENRESTY_PREFIX: /usr/local/openresty
     steps:
       - uses: actions/checkout@v4
       - name: Install luacheck
@@ -27,6 +25,25 @@ jobs:
 
   test:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        suite:
+          - name: BDD
+            files: t/bdd.t
+          - name: Functional
+            files: t/functional.t
+          - name: Integration
+            files: t/integration.t
+          - name: End-to-end
+            files: t/e2e.t
+          - name: Performance
+            files: t/performance.t
+          - name: Chaos
+            files: t/chaos.t
+          - name: Legacy
+            files: t/client.t t/http.t t/tcp.t t/observability.t
+    name: ${{ matrix.suite.name }}
     env:
       OPENRESTY_PREFIX: /usr/local/openresty
     steps:
@@ -60,40 +77,40 @@ jobs:
           echo "$OPENRESTY_PREFIX/nginx/sbin" >> $GITHUB_PATH
           echo "LUA_PATH=$PWD/lib/?.lua;$PWD/lib/?/init.lua;$PWD/lua-yar/src/?.lua;$PWD/lua-yar/src/?/init.lua;;" >> $GITHUB_ENV
 
-      - name: BDD tests
-        run: prove -I../test-nginx/lib t/bdd.t
+      - name: Run ${{ matrix.suite.name }} tests
+        run: prove -I../test-nginx/lib ${{ matrix.suite.files }}
         env:
           LUA_PATH: ${{ env.LUA_PATH }}
 
-      - name: Functional tests
-        run: prove -I../test-nginx/lib t/functional.t
-        env:
-          LUA_PATH: ${{ env.LUA_PATH }}
+  benchmark:
+    runs-on: ubuntu-latest
+    env:
+      OPENRESTY_PREFIX: /usr/local/openresty
+    steps:
+      - name: Checkout lua-resty-yar
+        uses: actions/checkout@v4
 
-      - name: Integration tests
-        run: prove -I../test-nginx/lib t/integration.t
-        env:
-          LUA_PATH: ${{ env.LUA_PATH }}
+      - name: Checkout lua-yar
+        uses: actions/checkout@v4
+        with:
+          repository: fangfengxiang/lua-yar
+          path: lua-yar
 
-      - name: End-to-end tests
-        run: prove -I../test-nginx/lib t/e2e.t
-        env:
-          LUA_PATH: ${{ env.LUA_PATH }}
+      - name: Install OpenResty
+        run: |
+          wget -qO - https://openresty.org/package/pubkey.gpg \
+            | sudo gpg --dearmor -o /usr/share/keyrings/openresty.gpg
+          codename=$(lsb_release -sc)
+          echo "deb [signed-by=/usr/share/keyrings/openresty.gpg] http://openresty.org/package/ubuntu $codename main" \
+            | sudo tee /etc/apt/sources.list.d/openresty.list
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq openresty
 
-      - name: Performance tests
-        run: prove -I../test-nginx/lib t/performance.t
-        env:
-          LUA_PATH: ${{ env.LUA_PATH }}
-
-      - name: Chaos tests
-        run: prove -I../test-nginx/lib t/chaos.t
-        env:
-          LUA_PATH: ${{ env.LUA_PATH }}
-
-      - name: Legacy tests
-        run: prove -I../test-nginx/lib t/client.t t/http.t t/tcp.t t/observability.t
-        env:
-          LUA_PATH: ${{ env.LUA_PATH }}
+      - name: Setup paths
+        run: |
+          echo "$OPENRESTY_PREFIX/bin" >> $GITHUB_PATH
+          echo "$OPENRESTY_PREFIX/nginx/sbin" >> $GITHUB_PATH
+          echo "LUA_PATH=$PWD/lib/?.lua;$PWD/lib/?/init.lua;$PWD/lua-yar/src/?.lua;$PWD/lua-yar/src/?/init.lua;;" >> $GITHUB_ENV
 
       - name: Benchmark
         run: |
@@ -103,6 +120,10 @@ jobs:
         env:
           LUA_PATH: ${{ env.LUA_PATH }}
 
+  opm-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
       - name: OPM build validation
         run: |
           printf 'github_account=fangfengxiang\ndownload_server=https://opm.openresty.org\n' > ~/.opmrc
