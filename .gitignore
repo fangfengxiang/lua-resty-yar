@@ -13,3 +13,6 @@ t/servroot/
 
 # OpenSpec change management (local working directory)
 openspec/
+
+# MkDocs build output
+site/

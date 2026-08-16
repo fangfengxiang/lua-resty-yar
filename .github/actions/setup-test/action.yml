@@ -25,7 +25,7 @@ runs:
         echo "deb [signed-by=/usr/share/keyrings/openresty.gpg] http://openresty.org/package/ubuntu $codename main" \
           | sudo tee /etc/apt/sources.list.d/openresty.list
         sudo apt-get update -qq
-        sudo apt-get install -y -qq openresty
+        sudo apt-get install -y -qq openresty openresty-opm
 
     - name: Install test-nginx
       if: inputs.install-test-nginx == 'true'

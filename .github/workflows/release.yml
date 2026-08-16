@@ -37,7 +37,8 @@ jobs:
           echo "deb [signed-by=/usr/share/keyrings/openresty.gpg] http://openresty.org/package/ubuntu $codename main" \
             | sudo tee /etc/apt/sources.list.d/openresty.list
           sudo apt-get update -qq
-          sudo apt-get install -y -qq openresty
+          sudo apt-get install -y -qq openresty openresty-opm
+          echo "/usr/local/openresty/bin" >> $GITHUB_PATH
 
       - name: OPM build validation
         run: |
@@ -60,12 +61,10 @@ jobs:
             ## Installation
 
             ```bash
-            # Prerequisite: install lua-yar
-            luarocks install lua-yar
-
-            # Install lua-resty-yar
             opm get fangfengxiang/lua-resty-yar
             ```
+
+            The dependency lua-yar is declared in `dist.ini` and installed automatically by OPM.
 
             ## Key Features
 
