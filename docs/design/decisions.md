@@ -14,7 +14,7 @@ lua-resty-yar 是 lua-yar（纯 Lua Yar RPC 协议库）的 **OpenResty OPM 适�
 
 ## 模块大纲
 
-11 个设计决策，按 4 个模块组织。每个决策列出驱动因素、名言（中英文对照）、经典文献/标准。看完此大纲即可掌握全貌，无需逐个阅读设计文件。
+12 个设计决策，按 4 个模块组织。每个决策列出驱动因素、名言（中英文对照）、经典文献/标准。看完此大纲即可掌握全貌，无需逐个阅读设计文件。
 
 ### 适配层定位（[adaptation-layer.md](adaptation-layer.md)，3 个决策）
 
@@ -32,13 +32,14 @@ lua-resty-yar 是 lua-yar（纯 Lua Yar RPC 协议库）的 **OpenResty OPM 适�
 | 5 | TCP handler 委托 handle({socket}) | 统一 Server 实例 | "Favor object composition over class inheritance." — Gang of Four | Design Patterns (GoF); Programming in Lua (Ierusalimschy) |
 | 6 | 自动检测 HTTP/stream 上下文 | 易用性 | "Make the common case fast." — 计算机体系结构原则 | The Art of Unix Programming (Raymond); nginx stream module docs |
 
-### 可观测性集成（[observability-integration.md](observability-integration.md)，3 个决策）
+### 可观测性集成（[observability-integration.md](observability-integration.md)，4 个决策）
 
 | # | 决策 | 驱动因素 | 名言 | 文献 |
 |---|------|---------|------|------|
 | 7 | ngx.log writer 注入 | 运行时适配 | "Logs are for humans." — 运维哲学 | Site Reliability Engineering (Google); Release It! (Nygard) |
 | 8 | 结构化 JSON 访问日志 | 可观测性 | "Observability is a measure of how well internal states of a system can be inferred from knowledge of its external outputs." — Wikipedia | OpenTelemetry Specification; nginx log_format docs |
 | 9 | request ID 贯穿与 trace context 传播 | 链路追踪 | "Distributed tracing is the recording of the causal path of requests." — Distributed Tracing Literature | OpenTelemetry Trace Context (W3C); Dapper Paper (Google) |
+| 12 | log_by_lua 延迟访问日志 | 性能 + OpenResty 原生惯例 | "The fastest I/O is no I/O." — Mythical Man-Month | OpenResty 官方文档; Mythical Man-Month (Brooks) |
 
 ### 配置桥接（[configuration-bridge.md](configuration-bridge.md)，2 个决策）
 

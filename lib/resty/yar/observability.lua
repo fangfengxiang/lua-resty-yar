@@ -118,17 +118,27 @@ end
 -- compose 组合时后执行的 on_request 会覆盖前者写入的值，但两次 ngx.now() 间隔在微秒级，影响可忽略。
 local CTX_START_TIME = "yar_obs_start_time"
 local CTX_PARAMS_SIZE = "yar_obs_params_size"
+-- 延迟日志模式：on_response 组装 entry 存到此 key，由 flush_logs() 在 log_by_lua 阶段输出
+local CTX_LOG_ENTRY = "yar_obs_log_entry"
 
 --- 结构化 JSON 访问日志工厂函数
 -- 返回 hooks 表 { on_request, on_response }，注入 setup({ hooks = ... })
--- on_request 记录开始时间和参数大小，on_response 计算 duration 并输出 JSON 日志
--- @param opts table|nil { writer = fn(level, msg) }，默认 ngx.log(ngx.INFO, ...)
+-- on_request 记录开始时间和参数大小，on_response 计算 duration 并组装日志 entry
+--
+-- 输出模式（opts.defer）：
+--   false/nil（默认）：on_response 立即输出 JSON 日志（in-request，响应热路径内）
+--   true：on_response 仅将 entry 存到 ngx.ctx，由 flush_logs() 在 log_by_lua 阶段输出
+--         日志 I/O 移出响应热路径，对标 nginx access_log 的 log phase 语义
+--         仅 HTTP 上下文可用（stream 无 log_by_lua 阶段）
+--
+-- @param opts table|nil { writer = fn(level, msg), defer = boolean }
 -- @return table hooks 表
 function _M.access_logger(opts)
     opts = opts or {}
     local writer = opts.writer or function(_level, msg)
         ngx.log(ngx.INFO, msg)
     end
+    local defer = opts.defer
 
     return {
         on_request = function(_method, params)
@@ -156,11 +166,38 @@ function _M.access_logger(opts)
             else
                 entry.retval_size = estimate_size(retval)
             end
-            local json = to_json(entry)
-            local level = (status == "ok") and ngx.INFO or ngx.WARN
-            writer(level, json)
+            if defer then
+                -- 延迟模式：存到 ngx.ctx，由 flush_logs() 在 log_by_lua 阶段输出
+                ngx.ctx[CTX_LOG_ENTRY] = entry
+            else
+                -- 即时模式：立即输出
+                local json = to_json(entry)
+                local level = (status == "ok") and ngx.INFO or ngx.WARN
+                writer(level, json)
+            end
         end,
     }
+end
+
+--- 在 log_by_lua 阶段输出延迟的访问日志
+-- 配合 access_logger({ defer = true }) 使用：
+--   init_by_lua:      hooks = obs.access_logger({ defer = true })
+--   log_by_lua_block: require("resty.yar.observability").flush_logs()
+-- 从 ngx.ctx 读取 on_response 组装的 entry 并输出。
+-- 若 entry 不存在（非 RPC 请求或未配置 defer 模式），静默返回。
+-- @param opts table|nil { writer = fn(level, msg) }，默认 ngx.log(ngx.INFO, ...)
+function _M.flush_logs(opts)
+    opts = opts or {}
+    local writer = opts.writer or function(_level, msg)
+        ngx.log(ngx.INFO, msg)
+    end
+    local entry = ngx.ctx[CTX_LOG_ENTRY]
+    if not entry then
+        return
+    end
+    local json = to_json(entry)
+    local level = (entry.status == "ok") and ngx.INFO or ngx.WARN
+    writer(level, json)
 end
 
 --- request ID 追踪中间件工厂函数

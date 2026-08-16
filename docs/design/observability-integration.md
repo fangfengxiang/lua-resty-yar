@@ -188,3 +188,62 @@ nginx 原生 `log_format` 生成文本日志，难以被日志采集系统（ELK
 
 1. *OpenTelemetry Trace Context (W3C)* — trace context 传播规范
 2. *Dapper Paper (Google)* — 分布式追踪基础理论
+
+---
+
+## 12. log_by_lua 延迟访问日志
+
+- **状态**：已实现
+- **决策驱动因素**：性能 + OpenResty 原生惯例
+- **关联决策**：#8（结构化 JSON 访问日志）、#1（适配层定位）
+
+### 背景
+
+OpenResty 的 `log_by_lua` 阶段在响应已发给客户端**之后**执行，是 OpenResty 原生的访问日志阶段（nginx `access_log` 也在此阶段写入）。决策 #8 的 `access_logger` 通过 `on_response` hook 在请求处理过程中同步写日志，日志 I/O 在响应热路径上。如果日志采集慢（如 shared dict 竞争、外部日志服务阻塞），拖慢响应。
+
+### 思考与取舍
+
+> "The fastest I/O is no I/O." — Mythical Man-Month
+> "最快的 I/O 是不做 I/O。" — 人月神话
+
+决策：`access_logger` 新增 `defer` 选项，延迟模式将日志输出从 `on_response`（请求中）移到 `log_by_lua` 阶段（请求后），由 `flush_logs()` 函数触发输出。
+
+**延迟而非消除：**
+- `on_response` 仍需组装 entry（计算 duration、组装字段），只是**输出**延迟
+- 日志 I/O（JSON 序列化 + writer 调用）移出热路径
+- 对标 nginx `access_log`：响应发送后才写访问日志
+
+**defer 选项设计：**
+- `defer = false`（默认）：`on_response` 立即输出（现有行为，兼容）
+- `defer = true`：`on_response` 将 entry 存到 `ngx.ctx[CTX_LOG_ENTRY]`，不输出
+- `flush_logs()`：在 `log_by_lua_block` 调用，从 `ngx.ctx` 读 entry 并输出
+
+**为什么用 ngx.ctx 传递：**
+- `ngx.ctx` 是请求级上下文，在 `log_by_lua` 阶段仍可读（OpenResty 保证）
+- `on_response` 在 content phase 内调用（lua-yar handle_message 内），`flush_logs` 在 log phase 调用，两者跨 phase 通过 `ngx.ctx` 传递
+- 对标 Kong log plugin：plugin 在 log phase 从 `ngx.ctx` 读取 content phase 存储的数据
+
+**TCP/stream 模式限制：**
+- stream 上下文无 `log_by_lua` 阶段（stream 的 `log` 阶段语义不同）
+- defer 模式仅 HTTP 上下文可用，文档明确说明
+- TCP 模式用户使用默认即时模式（`defer` 不设或 false）
+
+**适配层 vs 平台分界：**
+- 此优化是**阶段挂接映射**（适配层挂接 OpenResty 原生 `log_by_lua` 阶段），不是实现自己的 phase 编排系统
+- 对标 Kong 的 log phase plugin：Kong 在 log phase 调用 plugin，lua-resty-yar 在 log phase 调用 `flush_logs()`
+- 不引入插件架构、不引入 phase 编排——只是多挂接一个 OpenResty 原生阶段
+
+### 业界参考
+
+- **nginx `access_log`**：在 log phase 写入，响应发送后执行
+- **Kong log plugin**：挂在 `log_by_lua` 阶段，从 `ngx.ctx` 读取请求数据并异步写日志
+- **OpenResty `log_by_lua_block`**：官方文档明确此阶段用于"请求结束后的日志记录"
+
+### 代码评价
+
+`access_logger` 的 `defer` 选项实现简洁——`on_response` 组装 entry 后，`if defer then ngx.ctx[CTX_LOG_ENTRY] = entry else writer(...) end`，3 行分支。`flush_logs` 函数 8 行：读 ctx、判空、序列化、输出。默认 `defer = false` 保持向后兼容。`CTX_LOG_ENTRY` 常量按功能命名（日志条目存储 key）。TCP 模式不支持在文档和评估报告中明确说明。
+
+### 知识领域
+
+1. *OpenResty 官方文档* — `log_by_lua` 阶段语义与 `ngx.ctx` 生命周期
+2. *Mythical Man-Month*（Brooks）— "The fastest I/O is no I/O"，延迟 I/O 移出热路径
