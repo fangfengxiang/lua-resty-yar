@@ -62,7 +62,7 @@ function _M.serve()
     -- 委托 lua-yar serve_callback（处理 GET/POST/405/400/413/handle_message）
     _server:handle({
         method = ngx.req.get_method(),
-        data   = data or "",
+        data = data or "",
         writer = writer,
     })
 end

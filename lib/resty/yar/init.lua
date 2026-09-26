@@ -26,70 +26,43 @@ if not ok_yar then
 end
 ---@diagnostic enable: different-requires
 
+local config = require("resty.yar.config")
+local registry = require("resty.yar.registry")
+local hooks_module = require("resty.yar.hooks")
+
 local _M = {}
 _M.Yar = Yar
-_M.VERSION = "0.2.0"
+_M.VERSION = "0.5.0"
 -- 导出常用符号，用户无需直接 require lua-yar
-_M.Error            = Yar.error             -- 结构化错误（err.code 程序化匹配）
-_M.PACKAGER_JSON    = Yar.PACKAGER_JSON     -- "JSON" 打包器名称
-_M.PACKAGER_MSGPACK = Yar.PACKAGER_MSGPACK  -- "MSGPACK" 打包器名称
+_M.Error = Yar.error -- 结构化错误（err.code 程序化匹配）
+_M.PACKAGER_JSON = Yar.PACKAGER_JSON -- "JSON" 打包器名称
+_M.PACKAGER_MSGPACK = Yar.PACKAGER_MSGPACK -- "MSGPACK" 打包器名称
+_M.observability = require("resty.yar.observability")
+
+-- 插件注册入口（链式 API）
+_M.register = function(name, factory, opts)
+    return registry.register(name, factory, opts)
+end
 
 -- lua-yar Facade 引用缓存（减少热路径表查找）
 local Server = Yar.server
 local Client = Yar.client
-local Log    = Yar.log
-
--- 默认配置
-local default_config = {
-    -- 连接级（OPM 层管，cosocket 上设）
-    connect_timeout  = 1000,    -- 连接超时（ms）
-    send_timeout     = 5000,    -- 发送超时（ms）
-    read_timeout     = 5000,    -- 读取超时（ms）
-    keepalive_idle   = 60000,   -- TCP 保活空闲超时（ms）
-
-    -- 服务端级（透传给 lua-yar Server Facade 实例）
-    packager         = Yar.PACKAGER_JSON,
-    timeout          = 5000,    -- standalone run() 模式的 per-message 超时
-
-    -- 客户端级默认（出向调用，可被 per-client setopt 覆盖）
-    client_timeout   = 3000,    -- 出向 RPC 默认超时（ms）
-    pool_size        = 30,      -- cosocket 连接池容量
-    max_body_len     = 10 * 1024 * 1024,  -- 最大请求体长度（bytes，10MB）
-    ssl_verify       = true,              -- HTTPS 证书验证（生产环境必须开启）
-    resolve          = "",                -- 自定义 DNS 解析 IP（空=用系统 DNS）
-    proxy            = "",                -- HTTP 代理地址（空=直连）
-}
-
-local config = {}
-for k, v in pairs(default_config) do
-    config[k] = v
-end
+local Log = Yar.log
 
 -- 模块级缓存
 local _server
 local _on_worker_init
-local _client_cache = {}   -- uri -> Yar.Client（persistent 模式 worker 内复用）
-setmetatable(_client_cache, {__mode = "v"})  -- 弱值表，允许 GC 回收未引用的客户端包装器
+local _on_connect
+local _on_init_worker
+local _client_cache = {} -- uri -> Yar.Client（persistent 模式 worker 内复用）
+setmetatable(_client_cache, { __mode = "v" }) -- 弱值表，允许 GC 回收未引用的客户端包装器
 
 -- 日志级别映射：lua-yar Log 级别 → nginx 日志级别
 local LOG_LEVEL_MAP = {
     [Log.DEBUG] = ngx.DEBUG,
-    [Log.INFO]  = ngx.INFO,
-    [Log.WARN]  = ngx.WARN,
+    [Log.INFO] = ngx.INFO,
+    [Log.WARN] = ngx.WARN,
     [Log.ERROR] = ngx.ERR,
-}
-
--- 不混入 config 的键（非连接级参数：service/回调/日志/开关/hooks/depth_limits）
-local EXCLUDE_FROM_CONFIG = {
-    service           = true,
-    on_worker_init    = true,
-    log_level         = true,
-    use_cjson         = true,
-    use_cmsgpack      = true,
-    use_resty_http    = true,
-    hooks             = true,
-    json_max_depth    = true,
-    msgpack_max_depth = true,
 }
 
 --- 初始化：注入 cosocket + 注入 log writer + 创建 Server Facade + 合并配置
@@ -97,24 +70,22 @@ local EXCLUDE_FROM_CONFIG = {
 -- @param opts table|nil 用户配置
 -- @usage
 --   require("resty.yar").setup {
---       service         = { add = function(a, b) return a + b end },
---       packager        = "Msgpack",
---       connect_timeout = 2000,
---       log_level       = Yar.log.DEBUG,
---       on_worker_init  = function() ... end,
---       hooks           = { on_request = fn, on_response = fn },
---       json_max_depth  = 100,
---       msgpack_max_depth = 100,
+--       server = {
+--           service   = { add = function(a, b) return a + b end },
+--           packager  = "Msgpack",
+--           hooks     = { on_request = fn, on_response = fn },
+--           json_max_depth = 100,
+--       },
+--       client = { connect_timeout = 2000 },
+--       log_level      = Yar.log.DEBUG,
+--       on_worker_init = function() ... end,
 --   }
 function _M.setup(opts)
     opts = opts or {}
 
-    -- 合并用户配置（EXCLUDE_FROM_CONFIG 中的键不混入 config）
-    for k, v in pairs(opts) do
-        if not EXCLUDE_FROM_CONFIG[k] then
-            config[k] = v
-        end
-    end
+    -- 合并用户配置到嵌套分域 DEFAULTS（flat 兼容 + deep_merge + 类型校验）
+    local merged = config.merge(opts)
+    local server_cfg = merged.server
 
     -- 1. 注入 cosocket（出向客户端路径用）
     Client.set_socket(ngx.socket)
@@ -125,33 +96,73 @@ function _M.setup(opts)
     end)
 
     -- 3. 日志级别配置（可选，范围 Log.DEBUG=1 ~ Log.ERROR=4）
-    if opts.log_level and opts.log_level >= Log.DEBUG and opts.log_level <= Log.ERROR then
-        Log.set_level(opts.log_level)
+    -- tonumber() 守卫：非 number 值（如字符串 "debug"）降级为 WARN 日志，不中止启动
+    if merged.log_level then
+        local lvl = tonumber(merged.log_level)
+        if lvl and lvl >= Log.DEBUG and lvl <= Log.ERROR then
+            Log.set_level(lvl)
+        else
+            ngx.log(
+                ngx.WARN,
+                "[resty.yar] invalid log_level: "
+                    .. tostring(merged.log_level)
+                    .. ", expected number "
+                    .. Log.DEBUG
+                    .. "-"
+                    .. Log.ERROR
+            )
+        end
     end
 
     -- 4. RPC 服务定义
-    local service = opts.service or {
-        add   = function(a, b) return a + b end,
-        sub   = function(a, b) return a - b end,
-        greet = function(name) return "hello, " .. name end,
+    local service = server_cfg.service
+        or {
+            add = function(a, b)
+                return a + b
+            end,
+            sub = function(a, b)
+                return a - b
+            end,
+            greet = function(name)
+                return "hello, " .. name
+            end,
+        }
+
+    -- 5. 创建进程级 Server Facade 实例（从 server 域读取配置）
+    local server_opts = {
+        packager = server_cfg.packager,
+        timeout = server_cfg.timeout,
+        max_body_len = server_cfg.max_body_len,
     }
 
-    -- 5. 创建进程级 Server Facade 实例（构造器一步到位）
-    local server_opts = {
-        packager     = config.packager,
-        timeout      = config.timeout,
-        max_body_len = config.max_body_len,
-    }
-    if opts.hooks then server_opts.hooks = opts.hooks end
-    if opts.json_max_depth then server_opts.json_max_depth = opts.json_max_depth end
-    if opts.msgpack_max_depth then server_opts.msgpack_max_depth = opts.msgpack_max_depth end
+    -- hooks 收集 + 适配：registry.get_hooks 收集已注册插件 + inline hooks，
+    -- hooks.adapt 从 on_response 派生 on_error/on_timeout，返回 lua-yar 协议格式。
+    -- 向后兼容：无注册插件且无 inline hooks 时 hooks 为 nil，不传 hooks。
+    local composed_hooks = registry.get_hooks(server_cfg.hooks)
+    local adapted_hooks = hooks_module.adapt(composed_hooks)
+    if adapted_hooks then
+        if adapted_hooks.on_request or adapted_hooks.on_response then
+            server_opts.hooks = {
+                on_request = adapted_hooks.on_request,
+                on_response = adapted_hooks.on_response,
+            }
+        end
+        _on_connect = adapted_hooks.on_connect
+        _on_init_worker = adapted_hooks.on_init_worker
+    end
+    if server_cfg.json_max_depth then
+        server_opts.json_max_depth = server_cfg.json_max_depth
+    end
+    if server_cfg.msgpack_max_depth then
+        server_opts.msgpack_max_depth = server_cfg.msgpack_max_depth
+    end
     _server = Server.new(service, server_opts)
 
     -- 6. 缓存 worker init 回调
-    _on_worker_init = opts.on_worker_init
+    _on_worker_init = merged.on_worker_init
 
     -- 7. 可选：注册 cjson C 扩展加速器（替代纯 Lua JSON 编解码）
-    if opts.use_cjson then
+    if merged.extensions.use_cjson then
         local ok_cjson, cjson = pcall(require, "cjson")
         if ok_cjson then
             Yar.register_packager(Yar.PACKAGER_JSON, cjson)
@@ -161,7 +172,7 @@ function _M.setup(opts)
     end
 
     -- 8. 可选：注册 cmsgpack C 扩展加速器（替代纯 Lua Msgpack 编解码）
-    if opts.use_cmsgpack then
+    if merged.extensions.use_cmsgpack then
         local ok_cmp, cmsgpack = pcall(require, "cmsgpack")
         if ok_cmp then
             Yar.register_packager(Yar.PACKAGER_MSGPACK, cmsgpack)
@@ -172,7 +183,7 @@ function _M.setup(opts)
 
     -- 9. 可选：注入 lua-resty-http provider（替代默认 cosocket 手动 HTTP 实现）
     -- 注意：request_uri 不原生支持 proxy/resolve，启用时这些选项被忽略并记录 WARN
-    if opts.use_resty_http then
+    if merged.extensions.use_resty_http then
         local ok_http, http = pcall(require, "resty.http")
         if ok_http then
             Client.set_http_provider(function(url, prov_opts)
@@ -185,16 +196,16 @@ function _M.setup(opts)
                 local httpc = http.new()
                 local ka = prov_opts.keepalive or {}
                 local res, err = httpc:request_uri(url, {
-                    method           = prov_opts.method or "POST",
-                    body             = prov_opts.body,
-                    headers          = prov_opts.headers,
-                    ssl_verify        = prov_opts.ssl_verify ~= false,
-                    connect_timeout  = prov_opts.connect_timeout,
-                    send_timeout      = prov_opts.timeout,
-                    read_timeout      = prov_opts.timeout,
-                    timeout           = prov_opts.timeout,
+                    method = prov_opts.method or "POST",
+                    body = prov_opts.body,
+                    headers = prov_opts.headers,
+                    ssl_verify = prov_opts.ssl_verify ~= false,
+                    connect_timeout = prov_opts.connect_timeout,
+                    send_timeout = prov_opts.timeout,
+                    read_timeout = prov_opts.timeout,
+                    timeout = prov_opts.timeout,
                     keepalive_timeout = ka.idle_timeout,
-                    keepalive_pool    = ka.pool_size,
+                    keepalive_pool = ka.pool_size,
                 })
                 if not res then
                     return nil, err
@@ -225,14 +236,19 @@ end
 
 --- 获取合并后的配置（handler 用来读连接级参数）
 function _M.get_config()
-    return config
+    return config.get()
 end
 
 --- worker 进程初始化钩子（CHILD_INIT 映射）
--- 在 init_worker_by_lua_block 中调用，执行用户传入的 on_worker_init 回调
+-- 在 init_worker_by_lua_block 中调用：
+--   1. 执行用户传入的 on_worker_init 回调（旧 API）
+--   2. 调用框架 on_init_worker 钩子（插件可在此启动 timer）
 function _M.init_worker()
     if _on_worker_init then
         _on_worker_init()
+    end
+    if _on_init_worker then
+        _on_init_worker()
     end
 end
 
@@ -253,11 +269,13 @@ function _M.new_client(uri, opts)
         error("resty.yar not initialized: call setup() in init_by_lua first")
     end
     opts = opts or {}
+    local cfg = config.get()
+    local client_cfg = cfg.client
     local client = Client.new(uri)
     -- ssl_verify 需正确处理 false 值（Lua and/or 短路将 false 视为 falsy）
     local ssl_verify = opts.ssl_verify
     if ssl_verify == nil then
-        ssl_verify = config.ssl_verify
+        ssl_verify = client_cfg.ssl_verify
     end
     -- trace header 传播：从 ngx.ctx.yar_trace_headers 读取（trace_middleware 注入），
     -- 合并到出向请求 headers，不覆盖用户显式设置的 header。
@@ -280,26 +298,34 @@ function _M.new_client(uri, opts)
     end
     local client_opts = {
         transport = {
-            timeout          = opts.timeout          or config.client_timeout,
-            connect_timeout  = opts.connect_timeout  or config.connect_timeout,
-            max_body_len     = opts.max_body_len     or config.max_body_len,
-            ssl_verify       = ssl_verify,
-            headers          = headers,
-            persistent       = opts.persistent,
-            resolve          = opts.resolve or config.resolve,
-            proxy            = opts.proxy   or config.proxy,
+            timeout = opts.timeout or client_cfg.timeout,
+            connect_timeout = opts.connect_timeout or client_cfg.connect_timeout,
+            max_body_len = opts.max_body_len or client_cfg.max_body_len,
+            ssl_verify = ssl_verify,
+            headers = headers,
+            persistent = opts.persistent,
+            resolve = opts.resolve or client_cfg.resolve,
+            proxy = opts.proxy or client_cfg.proxy,
             keepalive = {
-                idle_timeout = opts.keepalive_idle or config.keepalive_idle,
-                pool_size    = opts.pool_size      or config.pool_size,
+                idle_timeout = opts.keepalive_idle or client_cfg.keepalive_idle,
+                pool_size = opts.pool_size or client_cfg.pool_size,
             },
         },
         protocol = {
-            packager = opts.packager or config.packager,
+            packager = opts.packager or cfg.server.packager,
         },
     }
     -- hooks 条件传递：仅当非 nil 时传入
-    if opts.hooks then client_opts.hooks = opts.hooks end
+    if opts.hooks then
+        client_opts.hooks = opts.hooks
+    end
     client:set_options(client_opts)
+
+    -- on_connect 钩子（框架层，不走 lua-yar hooks 通道）
+    if _on_connect then
+        _on_connect(uri)
+    end
+
     return client
 end
 
@@ -317,18 +343,21 @@ function _M.get_client(uri, opts)
     local cached = _client_cache[uri]
     if cached then
         local client = cached.client
-        -- 刷新 per-request trace headers（cached client 跨请求复用，首次的 trace headers 已过期）
+        -- 刷新 per-request trace headers（cached client 跨请求复用，需清除上次的 stale headers）
+        -- trace_headers 为 nil 时也用 base_headers 重建，避免 stale trace header 跨请求泄漏
         local trace_headers = ngx.ctx and ngx.ctx.yar_trace_headers
-        if trace_headers then
+        if trace_headers or cached.base_headers then
             local headers = {}
             if cached.base_headers then
                 for k, v in pairs(cached.base_headers) do
                     headers[k] = v
                 end
             end
-            for k, v in pairs(trace_headers) do
-                if not headers[k] then
-                    headers[k] = v
+            if trace_headers then
+                for k, v in pairs(trace_headers) do
+                    if not headers[k] then
+                        headers[k] = v
+                    end
                 end
             end
             client:set_options({ transport = { headers = headers } })
@@ -336,7 +365,7 @@ function _M.get_client(uri, opts)
         return client
     end
     opts = opts or {}
-    opts.persistent = true  -- persistent 模式，socket 跨 call 复用
+    opts.persistent = true -- persistent 模式，socket 跨 call 复用
     local base_headers = opts.headers
     local client = _M.new_client(uri, opts)
     _client_cache[uri] = { client = client, base_headers = base_headers }

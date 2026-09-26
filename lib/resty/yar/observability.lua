@@ -76,11 +76,16 @@ local function to_json(t)
         local val
         local tv = type(v)
         if tv == "string" then
-            local s = string.gsub(v, '\\', '\\\\')
+            local s = string.gsub(v, "\\", "\\\\")
             s = string.gsub(s, '"', '\\"')
-            s = string.gsub(s, '\n', '\\n')
-            s = string.gsub(s, '\r', '\\r')
-            s = string.gsub(s, '\t', '\\t')
+            s = string.gsub(s, "\n", "\\n")
+            s = string.gsub(s, "\r", "\\r")
+            s = string.gsub(s, "\t", "\\t")
+            -- RFC 8259 §7: U+0000–U+001F 全部控制字符必须转义
+            -- 已处理 \t(09) \n(0A) \r(0D)，此处覆盖剩余 29 个
+            s = string.gsub(s, "[%z\1-\8\11\12\14-\31]", function(c)
+                return string.format("\\u%04x", string.byte(c))
+            end)
             val = '"' .. s .. '"'
         elseif tv == "number" then
             val = tostring(v)
@@ -100,11 +105,15 @@ end
 -- @param v any 值
 -- @return number 大小（数组长度，或字符串长度，或 0）
 local function estimate_size(v)
-    if v == nil then return 0 end
+    if v == nil then
+        return 0
+    end
     local tv = type(v)
     if tv == "table" then
         local n = 0
-        for _ in pairs(v) do n = n + 1 end
+        for _ in pairs(v) do
+            n = n + 1
+        end
         return n
     elseif tv == "string" then
         return #v
@@ -116,8 +125,14 @@ end
 -- @param err_obj table|nil Error 对象（.code 字段）
 -- @return string 错误类型（"ok" / "transport" / "timeout" / "protocol" / "not_found" / "exception"）
 local function error_status(err_obj)
-    if not err_obj then return "ok" end
+    if not err_obj then
+        return "ok"
+    end
     local code = err_obj.code or "unknown"
+    -- 守卫非字符串 code（用户自定义 Error 可能用数字码），避免 string.lower 崩溃
+    if type(code) ~= "string" then
+        code = tostring(code)
+    end
     return string.lower(code)
 end
 
@@ -160,14 +175,14 @@ function _M.access_logger(opts)
             local status = error_status(err_obj)
             local request_id = get_or_create_request_id()
             local entry = {
-                ts           = ngx.localtime(),
-                level        = (status == "ok") and "info" or "warn",
-                module       = "yar.rpc",
-                method       = method or "unknown",
-                params_size  = ngx.ctx[CTX_PARAMS_SIZE] or 0,
-                status       = status,
-                duration_ms  = math.floor(duration_ms * 1000) / 1000,
-                request_id   = request_id,
+                ts = ngx.localtime(),
+                level = (status == "ok") and "info" or "warn",
+                module = "yar.rpc",
+                method = method or "unknown",
+                params_size = ngx.ctx[CTX_PARAMS_SIZE] or 0,
+                status = status,
+                duration_ms = math.floor(duration_ms * 1000) / 1000,
+                request_id = request_id,
             }
             if err_obj then
                 entry.error = err_obj.message or ""
@@ -218,6 +233,7 @@ end
 function _M.trace_middleware(opts)
     opts = opts or {}
     local id_gen = opts.id_generator or gen_request_id
+    local header_name = opts.header or "X-Request-Id"
 
     return {
         on_request = function(_method, _params)
@@ -229,8 +245,8 @@ function _M.trace_middleware(opts)
             if not ctx.yar_trace_headers then
                 ctx.yar_trace_headers = {}
             end
-            if not ctx.yar_trace_headers["X-Request-Id"] then
-                ctx.yar_trace_headers["X-Request-Id"] = ctx.request_id
+            if not ctx.yar_trace_headers[header_name] then
+                ctx.yar_trace_headers[header_name] = ctx.request_id
             end
         end,
         on_response = function(_method, _retval, _err_obj)
@@ -245,53 +261,228 @@ function _M.get_request_id()
     return get_or_create_request_id()
 end
 
+--- 导出 Prometheus 文本格式（exposition format）
+-- 从已知 method 列表构造 metric key 并查询 shdict，输出排序的 Prometheus exposition format。
+-- 从 metrics_recorder 闭包提取为模块级纯函数，metrics_recorder 通过 export = function() 委托调用。
+-- @param dict table ngx.shared.dict 实例
+-- @param known_methods table 已注册的 method 集合（method -> true）
+-- @param prefix string metric 名前缀
+-- @param keys table key 生成函数集 { counter_key, bucket_key, sum_key, count_key, inf_bucket_key }
+-- @return string Prometheus exposition format
+local function export_metrics(dict, known_methods, prefix, keys)
+    local counters = {}
+    local histograms = {} -- method -> { buckets={{le,val,raw}}, sum, count }
+    -- 对齐 lua-yar Error 码体系（error_status() 输出小写 Error 码）
+    local status_kinds = {
+        "total",
+        "ok",
+        "transport",
+        "timeout",
+        "protocol",
+        "not_found",
+        "exception",
+        "unknown",
+    }
+
+    for method in pairs(known_methods) do
+        -- 计数器：只输出已记录的 status kind（val > 0）
+        for _, kind in ipairs(status_kinds) do
+            local key = keys.counter_key(method, kind)
+            local val = dict:get(key)
+            if val and val > 0 then
+                counters[#counters + 1] = { key = key, val = val }
+            end
+        end
+        -- 直方图 buckets
+        local h = { buckets = {}, sum = 0, count = 0 }
+        for i = 1, #LATENCY_BUCKETS do
+            local key = keys.bucket_key(method, i)
+            local val = dict:get(key)
+            if val and val > 0 then
+                h.buckets[#h.buckets + 1] = { le = tostring(LATENCY_BUCKETS[i]), val = val, raw = key }
+            end
+        end
+        -- +Inf bucket
+        local inf_key = keys.inf_bucket_key(method)
+        local inf_val = dict:get(inf_key)
+        if inf_val and inf_val > 0 then
+            h.buckets[#h.buckets + 1] = { le = "+Inf", val = inf_val, raw = inf_key }
+        end
+        h.sum = dict:get(keys.sum_key(method)) or 0
+        h.count = dict:get(keys.count_key(method)) or 0
+        histograms[method] = h
+    end
+
+    local lines = {}
+
+    -- 计数器（key 字母序排序）
+    table.sort(counters, function(a, b)
+        return a.key < b.key
+    end)
+    if #counters > 0 then
+        lines[#lines + 1] = "# HELP " .. prefix .. "_calls_total Total RPC calls by method and status"
+        lines[#lines + 1] = "# TYPE " .. prefix .. "_calls_total counter"
+        for i = 1, #counters do
+            lines[#lines + 1] = counters[i].key .. " " .. tostring(counters[i].val)
+        end
+    end
+
+    -- 直方图（method 字母序，bucket 按数值 le 升序）
+    -- HELP/TYPE 每 metric 名只输出一次（Prometheus exposition format 规范）
+    local methods = {}
+    for m in pairs(histograms) do
+        methods[#methods + 1] = m
+    end
+    table.sort(methods)
+
+    if #methods > 0 then
+        lines[#lines + 1] = "# HELP " .. prefix .. "_duration RPC call latency in milliseconds"
+        lines[#lines + 1] = "# TYPE " .. prefix .. "_duration histogram"
+    end
+
+    for i = 1, #methods do
+        local m = methods[i]
+        local h = histograms[m]
+
+        -- bucket 按 le 排序：数值升序，+Inf 在末尾
+        table.sort(h.buckets, function(a, b)
+            if a.le == "+Inf" then
+                return false
+            end
+            if b.le == "+Inf" then
+                return true
+            end
+            return tonumber(a.le) < tonumber(b.le)
+        end)
+
+        for j = 1, #h.buckets do
+            lines[#lines + 1] = h.buckets[j].raw .. " " .. tostring(h.buckets[j].val)
+        end
+        lines[#lines + 1] = keys.sum_key(m) .. " " .. tostring(h.sum)
+        lines[#lines + 1] = keys.count_key(m) .. " " .. tostring(h.count)
+    end
+
+    if #lines == 0 then
+        return ""
+    end
+    return table.concat(lines, "\n") .. "\n"
+end
+
 --- RPC metrics 记录器工厂函数
 -- 调用计数（total/success/error/timeout，按 method 分组）+ 延迟直方图（bucket 分桶）
 -- 存储在 ngx.shared.dict（worker 间共享），导出 Prometheus 文本格式
--- @param opts table|nil { dict_name = "yar_metrics", prefix = "yar_rpc" }
+--
+-- buffer 模式（可选启用）：
+--   enabled = true 时，record() 累加到 worker-local _buffer（纯 Lua table 无锁），
+--   on_init_worker 钩子通过 ngx.timer.every 定期 flush 到 shdict。
+--   默认禁用（direct incr 模式）。worker crash 丢 ≤flush_interval 秒数据，对标 nginx access_log buffer。
+--
+-- @param opts table|nil { dict_name = "yar_metrics", prefix = "yar_rpc", buffer_enabled = false, flush_interval = 1 }
 -- @return table hooks 表 + export() 函数
 function _M.metrics_recorder(opts)
     opts = opts or {}
     local dict_name = opts.dict_name or "yar_metrics"
     local prefix = opts.prefix or "yar_rpc"
+    local buffer_enabled = opts.buffer_enabled or false
+    local flush_interval = opts.flush_interval or 1
 
     local dict = ngx.shared[dict_name]
     if not dict then
-        ngx.log(ngx.WARN, "[resty.yar observability] shared dict '" .. dict_name
-            .. "' not found, metrics disabled. Add 'lua_shared_dict " .. dict_name
-            .. " 1m;' to nginx.conf")
+        ngx.log(
+            ngx.WARN,
+            "[resty.yar observability] shared dict '"
+                .. dict_name
+                .. "' not found, metrics disabled. Add 'lua_shared_dict "
+                .. dict_name
+                .. " 1m;' to nginx.conf"
+        )
         return {
             on_request = function() end,
             on_response = function() end,
-            export = function() return "" end,
+            export = function()
+                return ""
+            end,
         }
     end
 
+    -- key 缓存：method×kind 组合预计算，消除热路径字符串拼接
+    -- per-worker（闭包级），无锁竞争
+    local _key_cache = {}
+    -- 已知 method 列表：record() 首次注册，export() 遍历此表替代 get_keys(0)
+    local _known_methods = {}
+    -- worker-local buffer（buffer 模式用）：key -> accumulated value
+    local _buffer = {}
+
+    --- incr 分发：buffer 模式累加到 _buffer，direct 模式直接 dict:incr
+    local function incr(key, val)
+        if buffer_enabled then
+            _buffer[key] = (_buffer[key] or 0) + val
+        else
+            dict:incr(key, val, 0)
+        end
+    end
+
     local function counter_key(method, kind)
-        return prefix .. "_calls_total{method=\"" .. method .. "\",status=\"" .. kind .. "\"}"
+        local ck = method .. "\0" .. kind
+        local k = _key_cache[ck]
+        if not k then
+            k = prefix .. '_calls_total{method="' .. method .. '",status="' .. kind .. '"}'
+            _key_cache[ck] = k
+        end
+        return k
     end
 
     local function bucket_key(method, bucket_idx)
-        return prefix .. "_duration_bucket{method=\"" .. method .. "\",le=\"" .. LATENCY_BUCKETS[bucket_idx] .. "\"}"
+        local ck = method .. "\0b" .. bucket_idx
+        local k = _key_cache[ck]
+        if not k then
+            k = prefix .. '_duration_bucket{method="' .. method .. '",le="' .. LATENCY_BUCKETS[bucket_idx] .. '"}'
+            _key_cache[ck] = k
+        end
+        return k
     end
 
     local function sum_key(method)
-        return prefix .. "_duration_sum{method=\"" .. method .. "\"}"
+        local ck = method .. "\0sum"
+        local k = _key_cache[ck]
+        if not k then
+            k = prefix .. '_duration_sum{method="' .. method .. '"}'
+            _key_cache[ck] = k
+        end
+        return k
     end
 
     local function count_key(method)
-        return prefix .. "_duration_count{method=\"" .. method .. "\"}"
+        local ck = method .. "\0count"
+        local k = _key_cache[ck]
+        if not k then
+            k = prefix .. '_duration_count{method="' .. method .. '"}'
+            _key_cache[ck] = k
+        end
+        return k
+    end
+
+    local function inf_bucket_key(method)
+        local ck = method .. "\0binf"
+        local k = _key_cache[ck]
+        if not k then
+            k = prefix .. '_duration_bucket{method="' .. method .. '",le="+Inf"}'
+            _key_cache[ck] = k
+        end
+        return k
     end
 
     local function record(method, _retval, err_obj)
+        -- 注册 method（供 export 遍历，替代 get_keys(0)）
+        _known_methods[method] = true
+
         local start = ngx.ctx[CTX_START_TIME] or ngx.now()
         local duration_ms = (ngx.now() - start) * 1000
         local status = error_status(err_obj)
 
-        -- 计数器（incr，原子操作），检查返回值防止静默失败
-        local _, err = dict:incr(counter_key(method, "total"), 1, 0)
-        if err then ngx.log(ngx.WARN, "[resty.yar observability] incr error: " .. err) end
-        dict:incr(counter_key(method, status), 1, 0)
+        -- 计数器（incr 分发：buffer 模式累加到 _buffer，direct 模式 dict:incr）
+        incr(counter_key(method, "total"), 1)
+        incr(counter_key(method, status), 1)
 
         -- 直方图：找到对应 bucket 并 incr
         local bucket_idx = #LATENCY_BUCKETS
@@ -301,16 +492,18 @@ function _M.metrics_recorder(opts)
                 break
             end
         end
-        -- 累积直方图：bucket[i] 包含所有 <= LATENCY_BUCKETS[i] 的计数
-        for i = 1, bucket_idx do
-            dict:incr(bucket_key(method, i), 1, 0)
+        -- 累积直方图（Prometheus cumulative semantics）：
+        -- duration <= LATENCY_BUCKETS[bucket_idx] 意味着也 <= 所有更大的 bucket
+        -- 因此递增 bucket_idx 到末尾的所有 bucket（le=X bucket 包含所有 ≤ X 的观测）
+        for i = bucket_idx, #LATENCY_BUCKETS do
+            incr(bucket_key(method, i), 1)
         end
-        -- +Inf bucket（不在 LATENCY_BUCKETS 数组中，单独构造 key）
-        dict:incr(prefix .. "_duration_bucket{method=\"" .. method .. "\",le=\"+Inf\"}", 1, 0)
+        -- +Inf bucket
+        incr(inf_bucket_key(method), 1)
 
         -- sum 和 count
-        dict:incr(sum_key(method), duration_ms, 0)
-        dict:incr(count_key(method), 1, 0)
+        incr(sum_key(method), duration_ms)
+        incr(count_key(method), 1)
     end
 
     local metrics = {
@@ -320,103 +513,34 @@ function _M.metrics_recorder(opts)
         on_response = function(method, retval, err_obj)
             record(method, retval, err_obj)
         end,
-        --- 导出 Prometheus 文本格式（exposition format）
-        -- 按 metric 类型分组输出（counter → histogram），每个 metric 前补 # HELP / # TYPE 行
-        -- histogram bucket 按数值 le 升序排列（+Inf 在末尾），所有 key 排序保证输出确定性
+        --- 导出 Prometheus 文本格式，委托模块级 export_metrics
         -- @return string Prometheus exposition format
         export = function()
-            local keys = dict:get_keys(0)
-            local counters = {}
-            local histograms = {}  -- method -> { buckets={{le,val,raw}}, sum, count }
-
-            for _, key in ipairs(keys) do
-                if type(key) == "string" and #key > 0
-                   and string.sub(key, 1, #prefix) == prefix then
-                    local val = dict:get(key) or 0
-                    -- 解析 metric 后缀名（prefix_ 与 { 之间的部分）
-                    local suffix = string.match(key, "^" .. prefix .. "_([^{|]+)")
-                    if suffix == "calls_total" then
-                        counters[#counters + 1] = { key = key, val = val }
-                    elseif suffix == "duration_bucket" then
-                        local m = string.match(key, 'method="([^"]*)"')
-                        local le = string.match(key, 'le="([^"]*)"')
-                        if m then
-                            local h = histograms[m]
-                            if not h then
-                                h = { buckets = {}, sum = 0, count = 0 }
-                                histograms[m] = h
-                            end
-                            h.buckets[#h.buckets + 1] = { le = le, val = val, raw = key }
-                        end
-                    elseif suffix == "duration_sum" then
-                        local m = string.match(key, 'method="([^"]*)"')
-                        if m then
-                            local h = histograms[m]
-                            if not h then
-                                h = { buckets = {}, sum = 0, count = 0 }
-                                histograms[m] = h
-                            end
-                            h.sum = val
-                        end
-                    elseif suffix == "duration_count" then
-                        local m = string.match(key, 'method="([^"]*)"')
-                        if m then
-                            local h = histograms[m]
-                            if not h then
-                                h = { buckets = {}, sum = 0, count = 0 }
-                                histograms[m] = h
-                            end
-                            h.count = val
-                        end
-                    end
-                end
-            end
-
-            local lines = {}
-
-            -- 计数器（key 字母序排序）
-            table.sort(counters, function(a, b) return a.key < b.key end)
-            if #counters > 0 then
-                lines[#lines + 1] = "# HELP " .. prefix .. "_calls_total Total RPC calls by method and status"
-                lines[#lines + 1] = "# TYPE " .. prefix .. "_calls_total counter"
-                for i = 1, #counters do
-                    lines[#lines + 1] = counters[i].key .. " " .. tostring(counters[i].val)
-                end
-            end
-
-            -- 直方图（method 字母序，bucket 按数值 le 升序）
-            -- HELP/TYPE 每 metric 名只输出一次（Prometheus exposition format 规范）
-            local methods = {}
-            for m in pairs(histograms) do methods[#methods + 1] = m end
-            table.sort(methods)
-
-            if #methods > 0 then
-                lines[#lines + 1] = "# HELP " .. prefix .. "_duration RPC call latency in milliseconds"
-                lines[#lines + 1] = "# TYPE " .. prefix .. "_duration histogram"
-            end
-
-            for i = 1, #methods do
-                local m = methods[i]
-                local h = histograms[m]
-
-                -- bucket 按 le 排序：数值升序，+Inf 在末尾
-                table.sort(h.buckets, function(a, b)
-                    if a.le == "+Inf" then return false end
-                    if b.le == "+Inf" then return true end
-                    return tonumber(a.le) < tonumber(b.le)
-                end)
-
-                for j = 1, #h.buckets do
-                    lines[#lines + 1] = h.buckets[j].raw .. " " .. tostring(h.buckets[j].val)
-                end
-                lines[#lines + 1] = prefix .. '_duration_sum{method="' .. m .. '"} ' .. tostring(h.sum)
-                lines[#lines + 1] = prefix .. '_duration_count{method="' .. m .. '"} ' .. tostring(h.count)
-            end
-
-            if #lines == 0 then return "" end
-            return table.concat(lines, "\n") .. "\n"
+            return export_metrics(dict, _known_methods, prefix, {
+                counter_key = counter_key,
+                bucket_key = bucket_key,
+                sum_key = sum_key,
+                count_key = count_key,
+                inf_bucket_key = inf_bucket_key,
+            })
         end,
     }
+
+    -- buffer 模式：注册 on_init_worker 钩子启动 timer flush
+    -- on_init_worker 经 registry compose + hooks.adapt 传递，由 init.lua init_worker() 调用
+    if buffer_enabled then
+        metrics.on_init_worker = function()
+            local ok, err = ngx.timer.every(flush_interval, function()
+                for key, val in pairs(_buffer) do
+                    dict:incr(key, val, 0)
+                    _buffer[key] = nil
+                end
+            end)
+            if not ok then
+                ngx.log(ngx.WARN, "[resty.yar observability] failed to start metrics flush timer: " .. tostring(err))
+            end
+        end
+    end
 
     return metrics
 end
@@ -435,32 +559,65 @@ function _M.compose(...)
         end
     end
 
-    return {
-        on_request = function(method, params)
-            for i = 1, #hooks_list do
-                local fn = hooks_list[i].on_request
-                if fn then
-                    local ok, err = pcall(fn, method, params)
+    -- 委托 compose_named，确保全 hook 类型转发（on_error/on_timeout/on_connect/on_init_worker）
+    -- 对标 DRY 原则：compose() 与 compose_named() 行为一致，避免 hook 丢失陷阱
+    local list = {}
+    for i = 1, #hooks_list do
+        list[#list + 1] = { name = tostring(i), priority = i, hooks = hooks_list[i] }
+    end
+    return _M.compose_named(list)
+end
+
+--- 组合命名 hooks 列表（registry 用）
+-- 输入 list = { { name="metrics", hooks={...}, priority=N }, ... }
+-- 组合 on_request / on_response / on_error / on_timeout / on_connect / on_init_worker（按 hook 类型分别遍历）。
+-- 错误日志显示插件 name 而非 index。pcall 隔离每个 hook。
+-- @param list table 命名 hooks 列表
+-- @return table 组合后的 hooks 表（含已存在的全部 hook 类型）
+function _M.compose_named(list)
+    -- 所有支持的 hook 类型
+    local hook_types = { "on_request", "on_response", "on_error", "on_timeout", "on_connect", "on_init_worker" }
+    local composed = {}
+
+    for _, ht in ipairs(hook_types) do
+        -- 收集此 hook 类型有值的插件
+        local fns = {}
+        for i = 1, #list do
+            local fn = list[i].hooks[ht]
+            if fn then
+                fns[#fns + 1] = { name = list[i].name, fn = fn }
+            end
+        end
+
+        if #fns > 0 then
+            composed[ht] = function(...)
+                for i = 1, #fns do
+                    local ok, err = pcall(fns[i].fn, ...)
                     if not ok then
-                        ngx.log(ngx.WARN, "[resty.yar observability] on_request hook "
-                            .. i .. " error: " .. tostring(err))
+                        ngx.log(
+                            ngx.WARN,
+                            "[resty.yar] " .. ht .. " hook '" .. fns[i].name .. "' error: " .. tostring(err)
+                        )
                     end
                 end
             end
-        end,
-        on_response = function(method, retval, err_obj)
-            for i = 1, #hooks_list do
-                local fn = hooks_list[i].on_response
-                if fn then
-                    local ok, err = pcall(fn, method, retval, err_obj)
-                    if not ok then
-                        ngx.log(ngx.WARN, "[resty.yar observability] on_response hook "
-                            .. i .. " error: " .. tostring(err))
-                    end
-                end
-            end
-        end,
-    }
+        end
+    end
+
+    return composed
+end
+
+--- 一键启用可观测性三件套（access_logger + trace_middleware + metrics_recorder）
+-- 返回组合后的 hooks 表，等价于手动 compose 三件套。
+-- @param opts table|nil { access_log = {...}, trace = {...}, metrics = {...} }
+-- @return table hooks 表
+function _M.defaults(opts)
+    opts = opts or {}
+    return _M.compose_named({
+        { name = "trace", priority = 50, hooks = _M.trace_middleware(opts.trace) },
+        { name = "access-log", priority = 100, hooks = _M.access_logger(opts.access_log) },
+        { name = "metrics", priority = 200, hooks = _M.metrics_recorder(opts.metrics) },
+    })
 end
 
 _M._LATENCY_BUCKETS = LATENCY_BUCKETS

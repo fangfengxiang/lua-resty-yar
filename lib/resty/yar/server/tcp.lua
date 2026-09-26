@@ -34,9 +34,11 @@ function _M.serve()
         return
     end
 
-    -- 连接级超时：从 config 读，设三段超时到 cosocket
+    -- 连接级超时：从 config.client 域读，设三段超时到 cosocket
+    -- 嵌套分域配置结构中超时参数在 config.client 下，非顶层
     local config = init.get_config()
-    sock:settimeouts(config.connect_timeout, config.send_timeout, config.read_timeout)
+    local client_cfg = config.client
+    sock:settimeouts(client_cfg.connect_timeout, client_cfg.send_timeout, client_cfg.read_timeout)
 
     -- 委托统一 Server Facade（TCP 模式 + keepalive 循环）
     if not _server then

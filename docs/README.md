@@ -18,11 +18,13 @@
 
 | 文档 | 决策数 | 内容 |
 |------|--------|------|
-| [decisions.md](design/decisions.md) | 12 | ADR 总索引：设计哲学三原则 + 4 模块大纲表 + 阅读指南 |
+| [decisions.md](design/decisions.md) | 16 | ADR 总索引：设计哲学三原则 + 5 模块大纲表 + 阅读指南 |
 | [adaptation-layer.md](design/adaptation-layer.md) | 3 | 适配层定位、OPM 目录结构、进程级 Server 实例复用 |
 | [handler-delegation.md](design/handler-delegation.md) | 3 | HTTP/TCP handler 委托策略、自动检测上下文 |
-| [observability-integration.md](design/observability-integration.md) | 4 | ngx.log 注入、结构化访问日志、request ID 贯穿、trace context |
-| [configuration-bridge.md](design/configuration-bridge.md) | 2 | 配置桥接与参数映射 |
+| [observability-integration.md](design/observability-integration.md) | 5 | ngx.log 注入、结构化访问日志、request ID 贯穿、trace context、worker-local metrics buffer |
+| [configuration-bridge.md](design/configuration-bridge.md) | 3 | 配置桥接、yar-c 参数映射、嵌套分域配置 Schema + flat 向后兼容 |
+| [plugin-lifecycle.md](design/plugin-lifecycle.md) | 2 | 插件注册体系 register + priority、框架生命周期钩子适配 on_error/on_timeout 派生 |
+| [framework-evolution-plan.md](design/framework-evolution-plan.md) | — | 框架化改造方案：插件体系、配置 schema、生命周期钩子、性能优化、工程卫生（已实现 v0.5.0） |
 
 ### reports/ — 工程报告
 

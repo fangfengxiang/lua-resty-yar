@@ -1,7 +1,7 @@
 use Test::Nginx::Socket::Lua;
 
 repeat_each(2);
-plan tests => repeat_each() * 24;
+plan tests => repeat_each() * 40;
 
 run_tests();
 
@@ -432,5 +432,204 @@ has_histogram_type=true
 counter_before_histogram=true
 help_once=true
 type_once=true
+--- no_error_log
+[error]
+
+=== TEST 9: export only includes known methods, not other dict keys
+--- main_config
+    env LUA_PATH;
+--- http_config
+    lua_package_path ";;";
+    lua_shared_dict yar_metrics 1m;
+    init_by_lua_block {
+        local yar = require("resty.yar")
+        local obs = require("resty.yar.observability")
+        yar._test_metrics = obs.metrics_recorder({ dict_name = "yar_metrics" })
+        yar.setup {
+            server = {
+                service = { add = function(a, b) return a + b end },
+                hooks = yar._test_metrics,
+            },
+        }
+    }
+--- config
+    location /api {
+        content_by_lua_block {
+            require("resty.yar.server.http").serve()
+        }
+    }
+    location /t {
+        content_by_lua_block {
+            local dict = ngx.shared["yar_metrics"]
+            dict:set("other_module_metric", 42)
+            local Request  = require("yar.message.request")
+            local Protocol = require("yar.protocol.protocol")
+            local Packager = require("yar.packager.packager")
+            local req = Request.new({ method = "add", params = { 1, 2 } })
+            local pk = Packager.get(Packager.JSON)
+            local msg = Protocol.render(req, pk)
+            local res = ngx.location.capture("/api", {
+                method = ngx.HTTP_POST,
+                body = msg,
+            })
+            local yar = require("resty.yar")
+            local export = yar._test_metrics.export()
+            ngx.say("has_yar_total=" .. tostring(string.find(export, "yar_rpc_calls_total") ~= nil))
+            ngx.say("no_other_key=" .. tostring(string.find(export, "other_module_metric") == nil))
+        }
+    }
+--- request
+GET /t
+--- response_body
+has_yar_total=true
+no_other_key=true
+--- no_error_log
+[error]
+
+=== TEST 10: export output includes histogram sum/count/inf
+--- main_config
+    env LUA_PATH;
+--- http_config
+    lua_package_path ";;";
+    lua_shared_dict yar_metrics 1m;
+    init_by_lua_block {
+        local yar = require("resty.yar")
+        local obs = require("resty.yar.observability")
+        yar._test_metrics = obs.metrics_recorder({ dict_name = "yar_metrics" })
+        yar.setup {
+            server = {
+                service = { add = function(a, b) return a + b end },
+                hooks = yar._test_metrics,
+            },
+        }
+    }
+--- config
+    location /api {
+        content_by_lua_block {
+            require("resty.yar.server.http").serve()
+        }
+    }
+    location /t {
+        content_by_lua_block {
+            local Request  = require("yar.message.request")
+            local Protocol = require("yar.protocol.protocol")
+            local Packager = require("yar.packager.packager")
+            local req = Request.new({ method = "add", params = { 1, 2 } })
+            local pk = Packager.get(Packager.JSON)
+            local msg = Protocol.render(req, pk)
+            local res = ngx.location.capture("/api", {
+                method = ngx.HTTP_POST,
+                body = msg,
+            })
+            local yar = require("resty.yar")
+            local export = yar._test_metrics.export()
+            ngx.say("has_inf=" .. tostring(string.find(export, "%+Inf") ~= nil))
+            ngx.say("has_sum=" .. tostring(string.find(export, "yar_rpc_duration_sum") ~= nil))
+            ngx.say("has_count=" .. tostring(string.find(export, "yar_rpc_duration_count") ~= nil))
+        }
+    }
+--- request
+GET /t
+--- response_body
+has_inf=true
+has_sum=true
+has_count=true
+--- no_error_log
+[error]
+
+=== TEST 11: named compose error log shows plugin name
+--- main_config
+    env LUA_PATH;
+--- http_config
+    lua_package_path ";;";
+--- config
+    location /t {
+        content_by_lua_block {
+            local observability = require("resty.yar.observability")
+            local hooks = observability.compose_named({
+                { name = "myplugin", priority = 100, hooks = {
+                    on_response = function() error("boom") end,
+                } },
+            })
+            hooks.on_response("test", 42, nil)
+            ngx.say("done=true")
+        }
+    }
+--- request
+GET /t
+--- response_body
+done=true
+--- error_log
+myplugin
+--- no_error_log
+[error]
+
+=== TEST 12: buffer mode adds on_init_worker hook
+--- main_config
+    env LUA_PATH;
+--- http_config
+    lua_package_path ";;";
+    lua_shared_dict yar_metrics 1m;
+--- config
+    location /t {
+        content_by_lua_block {
+            local obs = require("resty.yar.observability")
+            local m_buffered = obs.metrics_recorder({
+                dict_name = "yar_metrics",
+                buffer_enabled = true,
+                flush_interval = 1,
+            })
+            local m_direct = obs.metrics_recorder({
+                dict_name = "yar_metrics",
+            })
+            ngx.say("buffered_has_init=" .. tostring(m_buffered.on_init_worker ~= nil))
+            ngx.say("direct_has_init=" .. tostring(m_direct.on_init_worker ~= nil))
+        }
+    }
+--- request
+GET /t
+--- response_body
+buffered_has_init=true
+direct_has_init=false
+--- no_error_log
+[error]
+
+=== TEST 13: buffer mode accumulates then flushes to shdict
+--- main_config
+    env LUA_PATH;
+--- http_config
+    lua_package_path ";;";
+    lua_shared_dict yar_metrics 1m;
+--- config
+    location /t {
+        content_by_lua_block {
+            local obs = require("resty.yar.observability")
+            -- clear shdict to ensure repeat_each determinism
+            ngx.shared["yar_metrics"]:flush_all()
+            local m = obs.metrics_recorder({
+                dict_name = "yar_metrics",
+                buffer_enabled = true,
+                flush_interval = 1,
+            })
+            -- record a metric (accumulates to buffer, not shdict)
+            m.on_request("add", {})
+            m.on_response("add", 42, nil)
+            -- before flush: shdict should not have total counter
+            local dict = ngx.shared["yar_metrics"]
+            local before = dict:get("yar_rpc_calls_total{method=\"add\",status=\"total\"}")
+            ngx.say("before_flush=" .. tostring(before))
+            -- start flush timer and wait
+            m.on_init_worker()
+            ngx.sleep(1.2)
+            -- after flush: shdict should have total counter
+            local after = dict:get("yar_rpc_calls_total{method=\"add\",status=\"total\"}")
+            ngx.say("after_flush=" .. tostring(after))
+        }
+    }
+--- request
+GET /t
+--- response_body
+before_flush=nil
+after_flush=1
 --- no_error_log
 [error]

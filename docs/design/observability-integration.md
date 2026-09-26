@@ -247,3 +247,66 @@ OpenResty 的 `log_by_lua` 阶段在响应已发给客户端**之后**执行，�
 
 1. *OpenResty 官方文档* — `log_by_lua` 阶段语义与 `ngx.ctx` 生命周期
 2. *Mythical Man-Month*（Brooks）— "The fastest I/O is no I/O"，延迟 I/O 移出热路径
+
+---
+
+## 16. Worker-local metrics buffer + timer flush
+
+- **状态**：已实现
+- **决策驱动因素**：性能优化 / 高吞吐场景
+- **关联决策**：#7（ngx.log writer 注入）、#9（trace context 传播）、#12（log_by_lua 延迟日志）、#14（插件注册体系）、#15（生命周期钩子适配）
+
+### 背景
+
+决策 #9 的 `metrics_recorder` 在每次 RPC `on_response` 时触发 6-13 次 `dict:incr`（total + status + 5×bucket + inf + sum + count）。`dict:incr` 是原子操作，内部有自旋锁。高 QPS 场景下（数千 req/s/worker），多 worker 并发 incr 同一 key 导致锁竞争，成为性能瓶颈。
+
+### 思考与取舍
+
+> "The fastest I/O is no I/O." — Mythical Man-Month
+> "最快的 I/O 是不做 I/O。" — 人月神话
+
+> "Batching is the universal optimization." — 数据库工程经验
+> "批处理是通用优化手段。" — 数据库工程经验
+
+决策：引入可选的 worker-local buffer 模式。启用时 `record()` 累加到 worker-local `_buffer` table（纯 Lua table 操作无锁），`ngx.timer.every(flush_interval)` 定期 batch flush 到 shdict。默认禁用（direct incr 模式）。
+
+**buffer 模式设计：**
+- `_buffer = {}`（闭包级 worker-local table）：key → accumulated value
+- `incr(key, val)`：buffer 模式 `_buffer[key] = (_buffer[key] or 0) + val`，direct 模式 `dict:incr(key, val, 0)`
+- `on_init_worker` 钩子：`ngx.timer.every(flush_interval, flush_fn)`，flush 遍历 _buffer 调 `dict:incr` 后清零
+- flush_interval 默认 1 秒（对标 nginx `access_log buffer=1s`）
+
+**为什么用 on_init_worker 钩子注册 timer：**
+- `ngx.timer.every` 只能在 `init_worker_by_lua` 阶段调用
+- on_init_worker 经 registry compose + hooks.adapt 传递，由 init.lua `init_worker()` 调用
+- 无需用户手动注册——插件自带 timer 启动逻辑
+
+**为什么默认禁用：**
+- 低吞吐场景 buffer 增加延迟（≤1 秒数据在 buffer 未 flush）且不改善性能
+- direct incr 模式实时性好，低 QPS 无锁竞争
+- 用户按需启用：`metrics_recorder({ buffer_enabled = true })` 或 `defaults({ metrics = { buffer_enabled = true } })`
+
+**worker crash 丢数据：**
+- buffer 数据在 worker-local 内存，worker crash 丢失 ≤flush_interval 秒数据
+- 对标 nginx `access_log buffer`：同样 buffer 在 worker 内存，crash 丢日志
+- 可接受：metrics 是统计近似值，非精确审计数据
+
+**export 兼容性：**
+- export 从 shdict 读取（已 flush 的值），不含 buffer 未 flush 部分
+- ≤1 秒延迟可接受（Prometheus scrape interval 通常 ≥15 秒）
+
+### 业界参考
+
+- **nginx `access_log buffer`**：worker-local buffer + 定期 flush，crash 丢 buffer 日志
+- **Prometheus client_golang**：CounterVec.Inc() 本地原子操作，无外部 I/O（对标 buffer 模式纯内存操作）
+- **lua-resty-core `ngx.shared.DICT`**：`incr` 内部用自旋锁，高并发下竞争
+- **Kong cluster_cache**：worker-local LRU cache + 定期 sync 到 shdict
+
+### 代码评价
+
+buffer 模式实现简洁：`incr()` 函数分发（3 行 if/else），`on_init_worker` 钩子注册 timer（8 行），flush 函数遍历 _buffer + incr + 清零（4 行）。`buffer_enabled` 默认 false 保持向后兼容。配置项 `metrics_buffer = { enabled, flush_interval }` 在 config.lua DEFAULTS 中预声明。代码不侵入 direct 模式热路径——buffer_enabled=false 时 `incr()` 直接走 `dict:incr` 分支，无额外开销。
+
+### 知识领域
+
+1. *OpenResty 官方文档* — `ngx.timer.every` 与 `ngx.shared.DICT` 锁语义
+2. *Designing Data-Intensive Applications*（Kleppmann）— 批处理与流处理的延迟/吞吐取舍

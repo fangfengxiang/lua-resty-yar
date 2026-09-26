@@ -5,9 +5,10 @@
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://www.apache.org/licenses/LICENSE-2.0)
 [![OPM](https://img.shields.io/badge/OPM-lua--resty--yar-blue.svg)](https://opm.openresty.org/package/fangfengxiang/lua-resty-yar/)
 [![Test](https://github.com/fangfengxiang/lua-resty-yar/actions/workflows/test.yml/badge.svg?branch=main)](https://github.com/fangfengxiang/lua-resty-yar/actions/workflows/test.yml)
+[![codecov](https://codecov.io/gh/fangfengxiang/lua-resty-yar/graph/badge.svg?branch=main)](https://codecov.io/gh/fangfengxiang/lua-resty-yar)
 [![Release](https://img.shields.io/github/v/release/fangfengxiang/lua-resty-yar)](https://github.com/fangfengxiang/lua-resty-yar/releases)
 
-High-performance Yar RPC server for OpenResty, built on [lua-yar](https://github.com/fangfengxiang/lua-yar).
+High-performance Yar RPC framework for OpenResty, built on [lua-yar](https://github.com/fangfengxiang/lua-yar).
 
 ## Features
 
@@ -15,6 +16,11 @@ High-performance Yar RPC server for OpenResty, built on [lua-yar](https://github
 - **HTTP server handler** — `content_by_lua` entry, one coroutine per request, protocol dispatch via `serve_callback` delegation
 - **TCP stream server handler** — stream `content_by_lua` entry, one coroutine per connection, keepalive loop via `handle({socket})` delegation
 - **Cosocket injection** — outbound RPC calls use OpenResty non-blocking I/O with connection pooling and keepalive
+- **Nested config schema** — four-domain structured config (`server` / `client` / `observability` / `extensions`) with flat-format backward compatibility and deprecation warnings
+- **Plugin registry** — `register(name, factory, opts)` chainable API with priority-based ordering and named compose (error logs show plugin name, not index)
+- **Lifecycle hooks** — `on_error` / `on_timeout` derived from `on_response`, plus `on_connect` / `on_init_worker` framework-layer hooks — no protocol-layer changes
+- **Observability defaults** — `observability.defaults()` one-line enables access logging + trace + metrics
+- **Metrics buffer mode** — optional worker-local buffer + `ngx.timer.every` flush, eliminates shared-dict lock contention in high-throughput scenarios
 - **yar-c parameter mapping** — `READ_TIMEOUT` → three-stage cosocket timeouts, `CHILD_INIT` → `on_worker_init` hook
 - **Optional C extension acceleration** — cjson / cmsgpack auto-registration replaces pure-Lua codecs
 - **lua-resty-http provider** — optional HTTP transport provider injection (replaces default cosocket HTTP implementation)
@@ -305,6 +311,88 @@ require("resty.yar").setup {
 
 Each hook is pcall-isolated; a failure in one hook does not affect others.
 
+### One-click observability
+
+```lua
+local yar = require("resty.yar")
+local obs = require("resty.yar.observability")
+
+yar.setup {
+    service = { add = function(a, b) return a + b end },
+    hooks = obs.defaults(),  -- trace + access-log + metrics, one line
+}
+```
+
+`defaults()` returns `compose_named` result with priority-ordered hooks. Pass per-hook opts: `obs.defaults({ metrics = { buffer_enabled = true } })`.
+
+### Metrics buffer mode
+
+For high-throughput scenarios, enable worker-local buffering to eliminate `dict:incr` lock contention:
+
+```lua
+local obs = require("resty.yar.observability")
+
+require("resty.yar").setup {
+    service = { add = function(a, b) return a + b end },
+    hooks = obs.metrics_recorder({
+        dict_name = "yar_metrics",
+        buffer_enabled = true,     -- worker-local buffer, default false
+        flush_interval = 1,       -- flush every 1s, default 1
+    }),
+}
+```
+
+Buffer accumulates in worker-local memory (no locks), `ngx.timer.every` flushes to shared dict periodically. Worker crash loses ≤ `flush_interval` seconds of data (same semantics as nginx `access_log buffer`).
+
+## Plugin Registry
+
+Register plugins with priority-based ordering instead of manual `compose()`:
+
+```lua
+local yar = require("resty.yar")
+local obs = require("resty.yar.observability")
+
+-- Register plugins (chainable, priority = execution order, lower = first)
+yar.register("trace", function() return obs.trace_middleware() end, { priority = 50 })
+yar.register("access-log", function() return obs.access_logger() end, { priority = 100 })
+yar.register("metrics", function() return obs.metrics_recorder() end, { priority = 200 })
+
+yar.setup {
+    service = { add = function(a, b) return a + b end },
+    -- hooks auto-collected from registry, no manual compose needed
+}
+```
+
+- **Priority** — ascending order (lower number executes first), same priority sorted by name
+- **Named compose** — error logs show plugin name (e.g., `on_response hook 'metrics' error: ...`)
+- **Backward compatible** — inline `hooks = { on_request = fn }` still works (anonymous plugin, priority=50)
+
+## Lifecycle Hooks
+
+Framework-layer hooks beyond lua-yar's `on_request` / `on_response`:
+
+| Hook | Derived From | When |
+|------|---------------|------|
+| `on_error(method, err_obj)` | `on_response` | `err_obj` is not nil |
+| `on_timeout(method)` | `on_error` | `err_obj.code == TIMEOUT` |
+| `on_connect(uri)` | Framework | After `new_client()` creates client |
+| `on_init_worker()` | Framework | In `init_worker()`, after `on_worker_init` |
+
+```lua
+yar.register("error-handler", function()
+    return {
+        on_error = function(method, err_obj)
+            ngx.log(ngx.ERR, "RPC " .. method .. " failed: " .. (err_obj.message or ""))
+        end,
+        on_timeout = function(method)
+            ngx.log(ngx.WARN, "RPC " .. method .. " timed out")
+        end,
+    }
+end, { priority = 10 })
+```
+
+`on_error` / `on_timeout` are derived from `on_response` by the framework's `hooks.adapt()` — no protocol-layer changes.
+
 ## yar-c Parameter Mapping
 
 | yar-c Parameter | OpenResty Equivalent | How |
@@ -324,15 +412,20 @@ Each hook is pcall-isolated; a failure in one hook does not affect others.
 +---------------------------------------------------------+
 |              OpenResty (nginx + LuaJIT)                  |
 |  +-----------------------------------------------------+|
-|  |           lua-resty-yar (adaptation layer)           ||
-|  |  +----------+  +----------+  +------------------+   ||
-|  |  | init.lua |  | client   |  | server/          |   ||
-|  |  | setup()  |  | new/get  |  | http/tcp/init    |   ||
-|  |  | cosocket |  | wrapper  |  | handler entry    |   ||
-|  |  | ngx.log  |  |          |  |                  |   ||
-|  |  +----+-----+  +----+-----+  +--------+--------+   ||
-|  |       |             |               |              ||
-|  |       +-------------+---------------+             ||
+|  |           lua-resty-yar (framework layer)            ||
+|  |  +----------+  +----------+  +------------------+    ||
+|  |  | init.lua |  | client   |  | server/          |    ||
+|  |  | setup()  |  | new/get  |  | http/tcp/init    |    ||
+|  |  | cosocket |  | wrapper  |  | handler entry     |    ||
+|  |  | ngx.log  |  |          |  |                   |    ||
+|  |  +----+-----+  +----+-----+  +--------+--------+    ||
+|  |  +----------+  +----------+  +----------+  +-------+ ||
+|  |  | config  |  | registry |  | hooks    |  | obs   | ||
+|  |  | schema   |  | plugin   |  | adapt    |  | metrics||
+|  |  | merge    |  | compose  |  | derive   |  | trace  ||
+|  |  +----+-----+  +----+-----+  +----+-----+  +---+---+ ||
+|  |       |             |               |           |   ||
+|  |       +-------------+---------------+-----------+   ||
 |  |                     | delegates                    ||
 |  +---------------------+------------------------------+|
 |                        v                              |
@@ -345,7 +438,7 @@ Each hook is pcall-isolated; a failure in one hook does not affect others.
 +---------------------------------------------------------+
 ```
 
-The adaptation layer is thin and clear: cosocket injection, `ngx.log` writer, handler entry points, config bridging. All protocol logic (frame parsing, header validation, encoding/decoding, packager registry, hooks, Error classification) is delegated to lua-yar.
+The framework layer delegates all protocol logic (frame parsing, header validation, encoding/decoding, packager registry, hooks, Error classification) to lua-yar. Beyond protocol bridging, it provides framework-level capabilities: structured config schema (`config`), plugin registry with priority-based ordering (`registry`), lifecycle hook adaptation (`hooks`), and observability instrumentation (`observability` — Prometheus metrics, W3C trace context propagation, structured JSON access logging).
 
 ## Documentation
 
@@ -362,6 +455,7 @@ The adaptation layer is thin and clear: cosocket injection, `ngx.log` writer, ha
 - lua-yar (auto-installed via OPM)
 - Perl (for test-nginx)
 - luacheck (for linting)
+- stylua (for formatting)
 
 ### Run Tests
 
@@ -375,11 +469,25 @@ make test
 make lint
 ```
 
+### Format Check
+
+```bash
+make stylua-check
+```
+
+### Coverage Report
+
+```bash
+make coverage  # requires: luarocks install luacov
+```
+
 ### OPM Build
 
 ```bash
 opm build
 ```
+
+CI runs on OpenResty 1.21, 1.25, and 1.27 with luacheck + stylua + full test suite.
 
 ## License
 

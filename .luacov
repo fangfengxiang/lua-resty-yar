@@ -1,0 +1,20 @@
+-- luacov config: coverage collection scope and exclusions.
+-- Run: make coverage (Makefile handles luacov init injection + prove + report).
+-- CI: .github/workflows/test.yml coverage job injects luacov_init.lua into tests.
+
+-- Whitelist: only track lib/resty/yar/ modules
+include = {
+    "lib/resty/yar"
+}
+
+-- Exclusions (within include scope)
+exclude = {
+    "t/",
+    "lua-yar/",
+}
+
+-- Report file name
+reportfile = "luacov.report.out"
+
+-- Save stats every 100 lines processed
+savestepsize = 100

@@ -1,0 +1,108 @@
+name: test
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  test:
+    name: Test (OpenResty ${{ matrix.openresty }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        openresty:
+          - "1.21.4.3"
+          - "1.25.3.2"
+          - "1.27.1.2"
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install OpenResty
+        run: |
+          wget -qO - https://openresty.org/package/pubkey.gpg \
+            | sudo gpg --dearmor -o /usr/share/keyrings/openresty.gpg
+          codename=$(lsb_release -sc)
+          echo "deb [signed-by=/usr/share/keyrings/openresty.gpg] http://openresty.org/package/ubuntu $codename main" \
+            | sudo tee /etc/apt/sources.list.d/openresty.list
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq openresty=${{ matrix.openresty }}*
+          echo "Installed OpenResty ${{ matrix.openresty }}"
+          openresty -V 2>&1 | head -5
+
+      - name: Install Perl dependencies
+        run: |
+          sudo apt-get install -y -qq cpanminus
+          sudo cpanm --notest Test::Nginx
+
+      - name: Install Lua linters
+        run: |
+          sudo apt-get install -y -qq luarocks
+          sudo luarocks install luacheck
+
+      - name: Prepare lua-yar
+        run: |
+          cd lua-yar
+          ls -la src/yar/
+
+      - name: Luacheck
+        run: luacheck lib/
+
+      - name: StyLua check
+        uses: JohnnyMorganz/stylua-action@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          version: latest
+          args: --check lib/ t/
+
+      - name: Test
+        run: |
+          export TEST_NGINX_BINARY=/usr/local/openresty/nginx/sbin/nginx
+          prove -I$HOME/.cpanm/lib/lib/perl5 t/
+
+  coverage:
+    name: Coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: ./.github/actions/setup-test
+        with:
+          install-test-nginx: 'true'
+
+      - name: Install luacov
+        run: sudo luarocks install luacov
+
+      - name: Inject luacov into tests
+        run: |
+          # Prepend t/ to LUA_PATH so require("luacov_init") resolves
+          echo "LUA_PATH=$PWD/t/?.lua;$LUA_PATH" >> $GITHUB_ENV
+          # Inject require("luacov_init") at the start of each init_by_lua_block
+          find t/ -name '*.t' -exec \
+            sed -i 's/init_by_lua_block {/init_by_lua_block { require("luacov_init"); /g' {} +
+
+      - name: Run tests with coverage
+        run: |
+          export TEST_NGINX_BINARY=/usr/local/openresty/nginx/sbin/nginx
+          prove -I$HOME/.cpanm/lib/lib/perl5 t/
+
+      - name: Generate coverage report
+        run: luacov lib/resty/yar/
+
+      - name: Restore test files
+        if: always()
+        run: git checkout t/
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          files: ./luacov.report.out
+          flags: openresty
+          fail_ci_if_error: false

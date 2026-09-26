@@ -128,3 +128,68 @@ README 的"yar-c Parameter Mapping"表格清晰展示参数对应关系。`setup
 
 1. *yar-c source code* — C 语言参考实现，参数定义
 2. *RFC 7230* — HTTP/1.1 消息语法，连接超时语义
+
+---
+
+## 13. 嵌套分域配置 Schema + flat 向后兼容
+
+- **状态**：已实现
+- **决策驱动因素**：配置可扩展性 / 框架演进
+- **关联决策**：#10（嵌套选项桥接）、#7（ngx.log writer 注入）、#8（结构化 JSON 访问日志）
+
+### 背景
+
+决策 #10 将 `setup(opts)` 设计为扁平配置，桥接到 lua-yar 嵌套选项。适配层初期只有 server/client 两类参数，扁平足够。随框架演进（observability 集成 #7-#9、extensions C 扩展开关、未来 plugin/中间件配置），扁平 key 数量膨胀（20+），缺乏域归属标识，难以扩展和校验。
+
+### 思考与取舍
+
+> "Make the common case fast." — 计算机体系结构原则
+> "让常见情况快速。" — 计算机体系结构原则
+
+> "Be liberal in what you accept, conservative in what you send." — Jon Postel
+> "宽容地接受，保守地发送。" — Jon Postel
+
+决策：引入四域嵌套 DEFAULTS（server/client/observability/extensions），`config.merge()` 递归 `deep_merge` 合并用户覆盖。同时保留 flat 格式向后兼容——`convert_flat()` 检测顶层 flat key 自动映射到对应域，并 `ngx.log(ngx.WARN)` 提示弃用。
+
+**四域划分依据 OpenResty 配置层级：**
+- `server` — handler 层（packager/timeout/max_body_len/service/hooks）
+- `client` — cosocket 层（timeout/connect_timeout/pool_size/ssl_verify 等）
+- `observability` — log/shdict 层（metrics_dict/metrics_prefix/access_log/trace）
+- `extensions` — C 扩展加速器开关（use_cjson/use_cmsgpack/use_resty_http）
+
+**为什么不用单一 flat 表 + 前缀分组（如 `server_timeout` / `client_timeout`）：**
+- 前缀命名冗长，且 Lua table 访问 `config.server_timeout` 不如 `config.server.timeout` 语义清晰
+- 嵌套结构天然支持子域整体覆盖：`setup({ observability = { metrics_dict = "my_dict" } })` 只改一个值，其余取默认
+- 嵌套结构与 lua-yar 内部选项结构对齐，减少桥接层转换
+
+**flat 向后兼容策略：**
+- `FLAT_MAP` 表定义 flat key → domain 映射（值为字符串时 domain key = flat key；值为 `{domain, key}` 时支持重命名，如 `client_timeout → client.timeout`）
+- `convert_flat()` 检测 flat key，映射到嵌套结构，nested 优先（同时提供 flat 和 nested 时用 nested 值，WARN 日志提示冲突）
+- `max_body_len` 特殊处理：同时复制到 server 和 client 两个域（协议层和服务端都需要此限制）
+- 弃用提示：检测到 flat 格式时 `ngx.log(ngx.WARN, ...)` 提示迁移到嵌套格式，不中断运行
+
+**类型校验 fail-fast：**
+- `TYPE_SPEC` 表定义域 → 键 → 期望类型
+- `validate()` 在 `init_by_lua` 阶段（`setup()` 调用时）校验，类型不匹配 `error(msg, 2)` 指向调用方
+- 编程错误（类型错误）用 `error()`，运行时错误（配置缺失/默认值）用默认值兜底
+
+**deep_merge 设计：**
+- 递归合并 table 值（子表也深合并），标量值直接覆盖
+- 不修改入参（返回新表），避免 DEFAULTS 被污染
+- 对标 Lua 社区惯例：lua-resty-core `ngx.config` 也用嵌套表
+
+### 业界参考
+
+- **lua-resty-core**：`ngx.config` 嵌套配置结构
+- **lor**（OpenResty web 框架）：`app.conf` 嵌套配置 + 默认值合并
+- **Kong**： declarative config 用 YAML 嵌套结构，`kong.configuration` 表分域
+- **nginx.conf** 本身：`http {}` / `server {}` / `location {}` 嵌套分域，指令继承+覆盖语义
+
+### 代码评价
+
+`config.lua` 实现简洁（244 行）：`DEFAULTS` 表自文档化（四域一目了然），`FLAT_MAP` 表驱动映射（添加新 flat key 只需加一行），`TYPE_SPEC` 表驱动校验（扩展校验只加一行），`deep_merge` 递归但无循环引用风险（DEFAULTS 是纯数据无元表）。`convert_flat()` 的 nested 优先 + WARN 冲突提示确保迁移期安全。`validate()` 的 `error(msg, 2)` level=2 指向 `setup()` 调用方（nginx.conf 中 `init_by_lua_block`），报错信息含域名+键名+期望类型+实际类型，开发者可直接定位。
+
+### 知识领域
+
+1. *The Pragmatic Programmer*（Hunt & Thomas）— 配置管理与约定
+2. *nginx documentation* — 嵌套配置块继承与覆盖语义

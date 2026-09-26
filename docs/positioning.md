@@ -1,6 +1,6 @@
 # lua-resty-yar 项目定位
 
-> lua-resty-yar 是 lua-yar（纯 Lua Yar RPC 协议库）的 OpenResty OPM 适配层。
+> lua-resty-yar 是 lua-yar（纯 Lua Yar RPC 协议库）的 OpenResty 开发框架。
 
 ---
 
@@ -20,7 +20,7 @@ lua-resty-yar 将 lua-yar 纯协议库接入 OpenResty 运行时，提供：
 ## 二、不是什么
 
 - **不是独立协议实现** — 协议逻辑（帧解析、header 校验、编解码、packager registry、hooks、Error 分类）全部委托 lua-yar
-- **不是运行时框架** — 不管理连接生命周期（nginx 管理）、不调度协程（OpenResty 调度）、不提供进程管理
+- **不是运行时框架** — 不管理连接生命周期（nginx 管理）、不调度协程（OpenResty 调度）、不提供进程管理。lua-resty-yar 是开发框架（提供配置体系、插件注册、生命周期钩子、可观测性仪表化），不是运行时框架
 - **不是 PHP Yar / yar-c 的替代品** — 是 Yar 协议生态的 Lua/OpenResty 实现，与 PHP Yar / yar-c 互操作
 
 ## 三、生态关系
@@ -29,7 +29,7 @@ lua-resty-yar 将 lua-yar 纯协议库接入 OpenResty 运行时，提供：
 
 | 维度 | lua-yar | lua-resty-yar |
 |------|---------|---------------|
-| 定位 | 纯协议库 / SDK（运行时无关） | OpenResty OPM 适配层 |
+| 定位 | 纯协议库 / SDK（运行时无关） | OpenResty 开发框架 |
 | 运行时 | 任意（luasocket / cosocket / 其他） | OpenResty 专属 |
 | I/O 模型 | luasocket（阻塞）/ cosocket（注入后非阻塞） | cosocket（OpenResty 原生） |
 | 分发方式 | `Server:handle(spec)` / `listen()` + `loop()` | `content_by_lua_block` handler |

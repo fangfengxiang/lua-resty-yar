@@ -89,7 +89,7 @@ lib/resty/yar/
 **dist.ini 配置：**
 - `lib_dir=lib` — OPM 包代码根目录
 - `main_module=lib/resty/yar/init.lua` — 主模块入口
-- `requires = luajit, openresty >= 1.19.3.1, lua-yar >= 0.1.0` — 依赖声明
+- `requires = luajit, openresty >= 1.19.3.1, lua-yar >= 0.1.1` — 依赖声明
 
 ### 业界参考
 

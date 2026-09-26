@@ -178,7 +178,7 @@ e2=nil
             local client = yar.new_client("http://127.0.0.1:1984/api", { timeout = 10000 })
             local cfg = yar.get_config()
             ngx.say("client_timeout=" .. tostring(client.options.transport.timeout))
-            ngx.say("global_client_timeout=" .. tostring(cfg.client_timeout))
+            ngx.say("global_client_timeout=" .. tostring(cfg.client.timeout))
         }
     }
 --- request

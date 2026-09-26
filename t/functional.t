@@ -169,7 +169,7 @@ msg=request timed out
             local cfg = yar.get_config()
             ngx.say("c1_timeout=" .. c1.options.transport.timeout)
             ngx.say("c2_timeout=" .. c2.options.transport.timeout)
-            ngx.say("global=" .. cfg.client_timeout)
+            ngx.say("global=" .. cfg.client.timeout)
         }
     }
 --- request

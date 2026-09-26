@@ -45,6 +45,14 @@ jobs:
           printf 'github_account=fangfengxiang\ndownload_server=https://opm.openresty.org\n' > ~/.opmrc
           opm build
 
+      - name: OPM upload
+        if: ${{ env.OPM_PASSWORD != '' }}
+        env:
+          OPM_PASSWORD: ${{ secrets.OPM_PASSWORD }}
+        run: |
+          echo "github_token=$OPM_PASSWORD" >> ~/.opmrc
+          opm upload
+
       - name: Create source tarball
         run: |
           git archive --format=tar.gz \
@@ -56,7 +64,7 @@ jobs:
         with:
           name: lua-resty-yar v${{ steps.version.outputs.version }}
           body: |
-            OpenResty Yar RPC server adapter layer, built on [lua-yar](https://github.com/fangfengxiang/lua-yar).
+            High-performance Yar RPC framework for OpenResty, built on [lua-yar](https://github.com/fangfengxiang/lua-yar).
 
             ## Installation
 
@@ -69,10 +77,13 @@ jobs:
             ## Key Features
 
             - HTTP / TCP stream server handlers (`content_by_lua` entry)
-            - Cosocket injection with connection pooling
-            - yar-c parameter mapping (READ_TIMEOUT, CHILD_INIT, etc.)
-            - Process-level Server instance reuse
+            - Cosocket injection with connection pooling and keepalive
+            - Nested config schema with flat-format backward compatibility
+            - Plugin registry with priority-based ordering
+            - Lifecycle hooks (on_error / on_timeout derived from on_response)
+            - Observability suite (access logging, trace, Prometheus metrics)
             - Optional cjson / cmsgpack C extension acceleration
+            - Optional lua-resty-http transport provider
             - Structured Error objects (5 error codes)
 
             ## Documentation

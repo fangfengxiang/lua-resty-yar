@@ -13,9 +13,8 @@ local function bench(name, fn, iterations)
         fn()
     end
     local elapsed = ngx_now() - start
-    local per_op = elapsed / iterations * 1e6  -- us/op
-    print(string.format("  %-30s %8.2f us/op  (%d iters, %.3f ms total)",
-        name, per_op, iterations, elapsed * 1000))
+    local per_op = elapsed / iterations * 1e6 -- us/op
+    print(string.format("  %-30s %8.2f us/op  (%d iters, %.3f ms total)", name, per_op, iterations, elapsed * 1000))
     return per_op
 end
 

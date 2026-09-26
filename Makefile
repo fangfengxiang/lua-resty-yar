@@ -16,8 +16,9 @@ TEST_SUITE_LEGACY     = t/client.t t/http.t t/tcp.t t/observability.t
 PROVE ?= prove
 PROVE_OPTS ?= -r
 
-.PHONY: all test install lint opm-build
+.PHONY: all test install lint stylua-check opm-build
 .PHONY: test-bdd test-functional test-integration test-e2e test-performance test-chaos test-legacy benchmark
+.PHONY: coverage
 
 all: ;
 
@@ -28,6 +29,9 @@ install: all
 
 lint:
 	luacheck lib/
+
+stylua-check:
+	stylua --check lib/ t/
 
 test: all
 	PATH=$(OPENRESTY_PREFIX)/nginx/sbin:$$PATH $(PROVE) -I../test-nginx/lib $(PROVE_OPTS) t
@@ -55,8 +59,19 @@ test-legacy: all
 
 benchmark: all
 	PATH=$(OPENRESTY_PREFIX)/nginx/sbin:$$PATH $(OPENRESTY_PREFIX)/bin/resty \
-	  --lua-path '$(CURDIR)/lib/?.lua;$(CURDIR)/lua-yar/src/?.lua;;' \
+	  --lua-path '$(CURDIR)/lib/?.lua;$(CURDIR)/../lua-yar/src/?.lua;;' \
 	  t/benchmark/serialization.lua
 
 opm-build:
 	opm build
+
+coverage:
+	@echo "Running tests with luacov coverage..."
+	@test -f "$$(luarocks path --lr-path 2>/dev/null)/luacov.lua" || \
+	  test -f "$$(luarocks path --lua-version 5.1 --lr-path 2>/dev/null)/luacov.lua" || \
+	  { echo "Install luacov: luarocks install luacov"; exit 1; }
+	LUA_PATH="$$(luarocks path --lr-path 2>/dev/null || luarocks path --lua-version 5.1 --lr-path 2>/dev/null);$(CURDIR)/lib/?.lua;$(CURDIR)/../lua-yar/src/?.lua;;" \
+	  PATH=$(OPENRESTY_PREFIX)/nginx/sbin:$$PATH \
+	  $(PROVE) -I../test-nginx/lib $(PROVE_OPTS) t
+	luacov lib/resty/yar/
+	@echo "Coverage report: luacov.report.out"
