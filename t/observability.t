@@ -1,7 +1,7 @@
 use Test::Nginx::Socket::Lua;
 
 repeat_each(2);
-plan tests => repeat_each() * 18;
+plan tests => repeat_each() * 24;
 
 run_tests();
 
@@ -322,5 +322,115 @@ has_request_id=true
 GET /t
 --- response_body
 no_in_request_log=true
+--- no_error_log
+[error]
+
+=== TEST 7: trace_middleware propagates X-Request-Id to outgoing client headers
+--- main_config
+    env LUA_PATH;
+--- http_config
+    lua_package_path ";;";
+    lua_shared_dict yar_metrics 1m;
+    init_by_lua_block {
+        local yar = require("resty.yar")
+        local obs = require("resty.yar.observability")
+        yar.setup {
+            service = { add = function(a, b) return a + b end },
+            hooks = obs.trace_middleware(),
+        }
+    }
+--- config
+    location /t {
+        content_by_lua_block {
+            local obs = require("resty.yar.observability")
+            local yar = require("resty.yar")
+
+            -- 直接调用 trace_middleware 的 on_request hook（在当前请求 ctx 中执行）
+            local hook = obs.trace_middleware()
+            hook.on_request("test_method", { 1, 2 })
+
+            -- 验证 trace headers 已注入 ngx.ctx
+            local trace_headers = ngx.ctx.yar_trace_headers
+            ngx.say("has_trace_headers=" .. tostring(trace_headers ~= nil))
+            ngx.say("has_x_request_id=" .. tostring(trace_headers and trace_headers["X-Request-Id"] ~= nil))
+            -- 验证 X-Request-Id 与 request_id 一致
+            ngx.say("request_id_matches=" .. tostring(
+                trace_headers and trace_headers["X-Request-Id"] == ngx.ctx.request_id
+            ))
+            -- 验证 new_client trace header 合并不 mutation 调用方的 opts.headers
+            local user_headers = { ["X-Custom"] = "my-value" }
+            pcall(yar.new_client, "http://127.0.0.1:1/api", { headers = user_headers })
+            ngx.say("no_mutation=" .. tostring(user_headers["X-Request-Id"] == nil))
+        }
+    }
+--- request
+GET /t
+--- response_body
+has_trace_headers=true
+has_x_request_id=true
+request_id_matches=true
+no_mutation=true
+--- no_error_log
+[error]
+
+=== TEST 8: metrics export in Prometheus exposition format
+--- main_config
+    env LUA_PATH;
+--- http_config
+    lua_package_path ";;";
+    lua_shared_dict yar_metrics 1m;
+    init_by_lua_block {
+        local yar = require("resty.yar")
+        local obs = require("resty.yar.observability")
+        yar._test_metrics = obs.metrics_recorder({ dict_name = "yar_metrics" })
+        yar.setup {
+            service = { add = function(a, b) return a + b end },
+            hooks = yar._test_metrics,
+        }
+    }
+--- config
+    location /api {
+        content_by_lua_block {
+            require("resty.yar.server.http").serve()
+        }
+    }
+    location /t {
+        content_by_lua_block {
+            local Request  = require("yar.message.request")
+            local Protocol = require("yar.protocol.protocol")
+            local Packager = require("yar.packager.packager")
+            local req = Request.new({ method = "add", params = { 1, 2 } })
+            local pk = Packager.get(Packager.JSON)
+            local msg = Protocol.render(req, pk)
+            ngx.location.capture("/api", { method = ngx.HTTP_POST, body = msg })
+
+            local yar = require("resty.yar")
+            local export = yar._test_metrics.export()
+            -- 验证 Prometheus exposition format：含 # HELP / # TYPE 元数据行
+            ngx.say("has_help=" .. tostring(string.find(export, "# HELP") ~= nil))
+            ngx.say("has_type=" .. tostring(string.find(export, "# TYPE") ~= nil))
+            ngx.say("has_counter_type=" .. tostring(string.find(export, "# TYPE yar_rpc_calls_total counter") ~= nil))
+            ngx.say("has_histogram_type=" .. tostring(string.find(export, "# TYPE yar_rpc_duration histogram") ~= nil))
+            -- 验证 counter 在 histogram 之前（字母序）
+            local c_pos = string.find(export, "yar_rpc_calls_total")
+            local h_pos = string.find(export, "yar_rpc_duration_bucket")
+            ngx.say("counter_before_histogram=" .. tostring(c_pos ~= nil and h_pos ~= nil and c_pos < h_pos))
+            -- 验证 HELP/TYPE 每 metric 名只出现一次（Prometheus exposition format 规范）
+            local _, help_count = string.gsub(export, "# HELP yar_rpc_duration", "")
+            local _, type_count = string.gsub(export, "# TYPE yar_rpc_duration histogram", "")
+            ngx.say("help_once=" .. tostring(help_count == 1))
+            ngx.say("type_once=" .. tostring(type_count == 1))
+        }
+    }
+--- request
+GET /t
+--- response_body
+has_help=true
+has_type=true
+has_counter_type=true
+has_histogram_type=true
+counter_before_histogram=true
+help_once=true
+type_once=true
 --- no_error_log
 [error]

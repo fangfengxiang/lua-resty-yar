@@ -133,6 +133,9 @@ yar.init_worker()
 
 -- 合并后的配置表
 local config = yar.get_config()
+
+-- 创建自定义 Server 实例（传入 service 和 opts）
+local custom = yar.new_server(my_service, { packager = "Msgpack", hooks = my_hooks })
 ```
 
 **handler 入口**（在 `content_by_lua_block` 中调用）：
@@ -161,7 +164,7 @@ require("resty.yar.server.tcp").serve()  -- stream 上下文
 | `opts.keepalive_idle` | number | `keepalive_idle` | 连接池空闲超时（ms） |
 | `opts.pool_size` | number | `pool_size` | 连接池大小 |
 | `opts.ssl_verify` | boolean | `true` | HTTPS 证书验证 |
-| `opts.headers` | table | `nil` | 自定义 HTTP 头 |
+| `opts.headers` | table | `nil` | 自定义 HTTP 头（与 `ngx.ctx` trace headers 合并） |
 | `opts.resolve` | string | `""` | 自定义 DNS（host:ip） |
 | `opts.proxy` | string | `""` | HTTP 代理地址 |
 | `opts.persistent` | boolean | `false` | 持久 TCP 连接（跨调用复用） |
@@ -212,6 +215,89 @@ end
 local client = require("resty.yar.client").new("http://host/api")
 local pclient = require("resty.yar.client").get("tcp://host:9999")
 ```
+
+## 可观测性
+
+可观测性模块通过 hooks 注入提供结构化访问日志、跨服务 request ID 追踪、RPC metrics 记录——不修改协议层代码，未使用时零开销。
+
+### 访问日志
+
+```lua
+local obs = require("resty.yar.observability")
+
+require("resty.yar").setup {
+    service = { add = function(a, b) return a + b end },
+    hooks = obs.access_logger({
+        writer = function(level, msg) ngx.log(level, msg) end,
+    }),
+}
+```
+
+输出结构化 JSON 日志，字段包括：`ts`、`level`、`module`、`method`、`params_size`、`status`、`duration_ms`、`request_id`、`retval_size`/`error`。
+
+**延迟模式** — 将日志 I/O 移出响应热路径：
+
+```nginx
+init_by_lua_block {
+    require("resty.yar").setup {
+        service = { ... },
+        hooks = obs.access_logger({ defer = true }),
+    }
+}
+log_by_lua_block {
+    require("resty.yar.observability").flush_logs()
+}
+```
+
+### Request ID 追踪
+
+```lua
+require("resty.yar").setup {
+    service = { ... },
+    hooks = obs.trace_middleware(),
+}
+```
+
+生成 per-request ID 注入 `ngx.ctx.request_id`，并通过 `X-Request-Id` HTTP header 向出向 RPC 调用传播（不碰 YAR 协议 provider/token 字段，保持互操作）。业务代码中获取当前 request ID：
+
+```lua
+local request_id = require("resty.yar.observability").get_request_id()
+```
+
+### RPC Metrics
+
+```nginx
+http {
+    lua_shared_dict yar_metrics 1m;
+
+    init_by_lua_block {
+        local obs = require("resty.yar.observability")
+        require("resty.yar").setup {
+            service = { add = function(a, b) return a + b end },
+            hooks = obs.metrics_recorder({ dict_name = "yar_metrics" }),
+        }
+    }
+}
+```
+
+按 method 分组记录调用计数（total/success/error/timeout）和延迟直方图（bucket: 1/5/10/50/100/500/1000/5000ms + `+Inf`）。`export()` 输出标准 Prometheus exposition format（含 `# HELP`/`# TYPE` 元数据行，key 排序，histogram bucket 按 le 升序）。
+
+### 组合多个 hooks
+
+```lua
+local obs = require("resty.yar.observability")
+
+require("resty.yar").setup {
+    service = { add = function(a, b) return a + b end },
+    hooks = obs.compose(
+        obs.trace_middleware(),
+        obs.access_logger(),
+        obs.metrics_recorder({ dict_name = "yar_metrics" })
+    ),
+}
+```
+
+每个 hook 用 pcall 隔离，单个 hook 报错不影响其他 hook 执行。
 
 ## yar-c 参数映射
 

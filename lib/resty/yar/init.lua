@@ -28,7 +28,7 @@ end
 
 local _M = {}
 _M.Yar = Yar
-_M.VERSION = "0.1.0"
+_M.VERSION = "0.2.0"
 -- 导出常用符号，用户无需直接 require lua-yar
 _M.Error            = Yar.error             -- 结构化错误（err.code 程序化匹配）
 _M.PACKAGER_JSON    = Yar.PACKAGER_JSON     -- "JSON" 打包器名称
@@ -236,9 +236,12 @@ function _M.init_worker()
     end
 end
 
---- 构造新的 Server Facade 实例（需要自定义 service 时用）
-function _M.new_server(svc)
-    return Server.new(svc)
+--- 构造新的 Server Facade 实例（需要自定义 service / opts 时用）
+-- @param svc table RPC 服务对象
+-- @param opts table|nil Server 选项（packager/timeout/max_body_len/hooks 等）
+-- @return Yar.Server 实例
+function _M.new_server(svc, opts)
+    return Server.new(svc, opts)
 end
 
 --- 创建客户端实例（每次新建，配置从 setup() 预填）
@@ -256,13 +259,32 @@ function _M.new_client(uri, opts)
     if ssl_verify == nil then
         ssl_verify = config.ssl_verify
     end
+    -- trace header 传播：从 ngx.ctx.yar_trace_headers 读取（trace_middleware 注入），
+    -- 合并到出向请求 headers，不覆盖用户显式设置的 header。
+    -- 创建新表合并，避免 mutation 调用方的 opts.headers（side-effect-free）
+    local headers = opts.headers
+    local trace_headers = ngx.ctx and ngx.ctx.yar_trace_headers
+    if trace_headers then
+        local merged = {}
+        if headers then
+            for k, v in pairs(headers) do
+                merged[k] = v
+            end
+        end
+        for k, v in pairs(trace_headers) do
+            if not merged[k] then
+                merged[k] = v
+            end
+        end
+        headers = merged
+    end
     local client_opts = {
         transport = {
             timeout          = opts.timeout          or config.client_timeout,
             connect_timeout  = opts.connect_timeout  or config.connect_timeout,
             max_body_len     = opts.max_body_len     or config.max_body_len,
             ssl_verify       = ssl_verify,
-            headers          = opts.headers,
+            headers          = headers,
             persistent       = opts.persistent,
             resolve          = opts.resolve or config.resolve,
             proxy            = opts.proxy   or config.proxy,
@@ -283,6 +305,8 @@ end
 
 --- 获取缓存的 persistent 客户端实例（同 uri worker 内复用）
 -- 默认 persistent=true，socket 跨 call 复用，配合 cosocket 连接池实现 keepalive。
+-- Per-request trace header 刷新：cached client 跨请求复用时，每次调用刷新 trace headers。
+-- OpenResty 协作调度：set_options 不 yield，headers 在 client:call 发送前读取，无竞态。
 -- @param uri string 服务地址
 -- @param opts table|nil per-client 选项（仅首次创建时生效）
 -- @return Yar.Client 实例
@@ -290,13 +314,32 @@ function _M.get_client(uri, opts)
     if not _server then
         error("resty.yar not initialized: call setup() in init_by_lua first")
     end
-    if _client_cache[uri] then
-        return _client_cache[uri]
+    local cached = _client_cache[uri]
+    if cached then
+        local client = cached.client
+        -- 刷新 per-request trace headers（cached client 跨请求复用，首次的 trace headers 已过期）
+        local trace_headers = ngx.ctx and ngx.ctx.yar_trace_headers
+        if trace_headers then
+            local headers = {}
+            if cached.base_headers then
+                for k, v in pairs(cached.base_headers) do
+                    headers[k] = v
+                end
+            end
+            for k, v in pairs(trace_headers) do
+                if not headers[k] then
+                    headers[k] = v
+                end
+            end
+            client:set_options({ transport = { headers = headers } })
+        end
+        return client
     end
     opts = opts or {}
     opts.persistent = true  -- persistent 模式，socket 跨 call 复用
+    local base_headers = opts.headers
     local client = _M.new_client(uri, opts)
-    _client_cache[uri] = client
+    _client_cache[uri] = { client = client, base_headers = base_headers }
     return client
 end
 

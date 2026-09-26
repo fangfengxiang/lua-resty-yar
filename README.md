@@ -11,11 +11,16 @@ High-performance Yar RPC server for OpenResty, built on [lua-yar](https://github
 
 ## Features
 
-- **HTTP server handler** — `content_by_lua` entry, one coroutine per request, pure protocol dispatch via `handle_message`
-- **TCP stream server handler** — stream `content_by_lua` entry, one coroutine per connection, keepalive loop via `handle_connection`
-- **Cosocket injection** — outbound RPC calls use OpenResty non-blocking I/O with connection pooling
+- **Unified Server Facade** — single `Server` instance handles both HTTP and TCP, created in `init_by_lua`, shared across all coroutines in a worker
+- **HTTP server handler** — `content_by_lua` entry, one coroutine per request, protocol dispatch via `serve_callback` delegation
+- **TCP stream server handler** — stream `content_by_lua` entry, one coroutine per connection, keepalive loop via `handle({socket})` delegation
+- **Cosocket injection** — outbound RPC calls use OpenResty non-blocking I/O with connection pooling and keepalive
 - **yar-c parameter mapping** — `READ_TIMEOUT` → three-stage cosocket timeouts, `CHILD_INIT` → `on_worker_init` hook
-- **Process-level instance reuse** — Server/TcpServer instances created in `init_by_lua`, shared by all coroutines in worker
+- **Optional C extension acceleration** — cjson / cmsgpack auto-registration replaces pure-Lua codecs
+- **lua-resty-http provider** — optional HTTP transport provider injection (replaces default cosocket HTTP implementation)
+- **Structured error objects** — 5 error codes (TRANSPORT / TIMEOUT / PROTOCOL / NOT_FOUND / EXCEPTION), match via `err.code`
+- **Hooks mechanism** — request/response interception (pcall-protected, zero overhead when unused)
+- **Observability suite** — structured JSON access logging, cross-service request ID tracing, RPC metrics with Prometheus export
 
 ## Installation
 
@@ -76,13 +81,13 @@ stream {
 }
 ```
 
-> **More examples:** The `t/` directory contains complete, runnable test-nginx test suites (`http.t`, `tcp.t`, `client.t`) that cover HTTP server, TCP stream server, and client usage patterns. These serve as additional working references.
+> **More examples:** The `t/` directory contains complete test-nginx test suites (`http.t`, `tcp.t`, `client.t`, `observability.t`) covering HTTP server, TCP stream server, client usage, and observability patterns.
 
 ## API
 
 ### `require("resty.yar").setup(opts)`
 
-Call once in `init_by_lua_block`. Merges config, injects cosocket, creates Server/TcpServer instances.
+Call once in `init_by_lua_block`. Merges config, injects cosocket, creates the unified Server Facade instance.
 
 **Parameters:**
 
@@ -97,39 +102,53 @@ Call once in `init_by_lua_block`. Merges config, injects cosocket, creates Serve
 | `timeout` | number | `5000` | Per-message timeout for standalone `run()` mode (ms) |
 | `client_timeout` | number | `3000` | Outbound RPC default timeout (ms) |
 | `pool_size` | number | `30` | Cosocket connection pool size |
+| `max_body_len` | number | `10485760` | Maximum request body length (bytes, 10MB) |
+| `ssl_verify` | boolean | `true` | HTTPS certificate verification |
+| `resolve` | string | `""` | Custom DNS resolution (host:ip format) |
+| `proxy` | string | `""` | HTTP proxy address |
 | `on_worker_init` | function | `nil` | Worker init callback (CHILD_INIT mapping) |
+| `log_level` | number | `INFO` | Log level (1=DEBUG ~ 4=ERROR) |
+| `hooks` | table | `nil` | `{on_request=fn, on_response=fn}` interception |
+| `use_cjson` | boolean | `false` | Register cjson C extension for JSON encoding |
+| `use_cmsgpack` | boolean | `false` | Register cmsgpack C extension for Msgpack encoding |
+| `use_resty_http` | boolean | `false` | Inject lua-resty-http as HTTP transport provider |
+| `json_max_depth` | number | `512` | JSON max nesting depth (built-in codec) |
+| `msgpack_max_depth` | number | `512` | Msgpack max nesting depth (built-in codec) |
 
-### `require("resty.yar").get_http_server()`
+### Server API
 
-Returns the process-level Server instance (HTTP scenario). Error if `setup()` not called.
+```lua
+local yar = require("resty.yar")
 
-### `require("resty.yar").get_tcp_server()`
+-- Process-level Server Facade instance (created by setup())
+local server = yar.get_server()
 
-Returns the process-level TcpServer instance (TCP stream scenario). Error if `setup()` not called.
+-- Worker initialization hook (call in init_worker_by_lua_block)
+yar.init_worker()
 
-### `require("resty.yar").get_config()`
+-- Merged config table (handlers read connection-level params from here)
+local config = yar.get_config()
 
-Returns the merged config table. Handlers use this to read connection-level parameters.
+-- Create a custom Server instance with options
+local custom = yar.new_server(my_service, { packager = "Msgpack", hooks = my_hooks })
+```
 
-### `require("resty.yar").init_worker()`
+**Handler entry points** (call in `content_by_lua_block`):
 
-Call in `init_worker_by_lua_block`. Executes the `on_worker_init` callback if provided.
+```lua
+-- Auto-detect HTTP/stream context (convenience entry, tiny pcall overhead)
+require("resty.yar.server").serve()
 
-### `require("resty.yar.server").serve()`
+-- Direct calls (production hot path, no detection overhead)
+require("resty.yar.server.http").serve()  -- HTTP context
+require("resty.yar.server.tcp").serve()   -- stream context
+```
 
-Unified entry point for `content_by_lua_block`. Auto-detects HTTP/stream context and dispatches to the appropriate handler.
+### Client API
 
-You can also call handlers directly:
-- `require("resty.yar.server.http").serve()`
-- `require("resty.yar.server.tcp").serve()`
+#### `yar.new_client(uri, opts)`
 
-## Client API
-
-### `require("resty.yar").new_client(uri, opts)`
-
-Creates a `Yar.Client` instance with connection-level params pre-injected from `setup()` config. Each call creates a new instance.
-
-**Parameters:**
+Creates a new `Yar.Client` instance with connection-level params pre-injected from `setup()` config.
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
@@ -139,8 +158,12 @@ Creates a `Yar.Client` instance with connection-level params pre-injected from `
 | `opts.connect_timeout` | number | `connect_timeout` | Connection timeout (ms) |
 | `opts.keepalive_idle` | number | `keepalive_idle` | Pool idle timeout (ms) |
 | `opts.pool_size` | number | `pool_size` | Connection pool size |
-
-**Usage:**
+| `opts.ssl_verify` | boolean | `true` | HTTPS certificate verification |
+| `opts.headers` | table | `nil` | Custom HTTP headers (merged with trace headers from `ngx.ctx`) |
+| `opts.resolve` | string | `""` | Custom DNS (host:ip) |
+| `opts.proxy` | string | `""` | HTTP proxy address |
+| `opts.persistent` | boolean | `false` | Persistent TCP connection (socket reuse across calls) |
+| `opts.hooks` | table | `nil` | `{on_request=fn, on_response=fn}` |
 
 ```nginx
 location /t {
@@ -152,9 +175,9 @@ location /t {
 }
 ```
 
-### `require("resty.yar").get_client(uri, opts)`
+#### `yar.get_client(uri, opts)`
 
-Returns a memoized persistent Client instance by `uri`. Same `uri` returns the same instance within a worker. Enables socket reuse across calls (persistent mode).
+Returns a memoized persistent Client instance by `uri`. Same `uri` returns the same instance within a worker, enabling socket reuse across calls.
 
 ```nginx
 location /t {
@@ -167,19 +190,125 @@ location /t {
 }
 ```
 
-### `require("resty.yar.client")`
+#### Error handling
 
-Thin wrapper module providing `new(uri, opts)` and `get(uri, opts)` functions, delegating to `init.new_client` / `init.get_client`.
+```lua
+local ret, err = client:call("add", { 1, 2 })
+if not ret then
+    -- err is a structured Error object, match via .code
+    if err.code == require("resty.yar").Error.TIMEOUT then
+        -- handle timeout
+    end
+end
+```
+
+### `require("resty.yar.client")` module
+
+Thin wrapper providing `new(uri, opts)` and `get(uri, opts)`:
 
 ```lua
 local client = require("resty.yar.client").new("http://host/api")
 local pclient = require("resty.yar.client").get("tcp://host:9999")
 ```
 
+## Observability
+
+The observability module provides structured access logging, cross-service request ID tracing, and RPC metrics via hooks injection — no protocol-layer changes, zero overhead when unused.
+
+### Access logging
+
+```lua
+local obs = require("resty.yar.observability")
+
+require("resty.yar").setup {
+    service = { add = function(a, b) return a + b end },
+    hooks = obs.access_logger({
+        writer = function(level, msg) ngx.log(level, msg) end,
+    }),
+}
+```
+
+Outputs structured JSON logs with fields: `ts`, `level`, `module`, `method`, `params_size`, `status`, `duration_ms`, `request_id`, `retval_size`/`error`.
+
+**Deferred mode** — move log I/O out of the response hot path:
+
+```nginx
+init_by_lua_block {
+    require("resty.yar").setup {
+        service = { ... },
+        hooks = obs.access_logger({ defer = true }),
+    }
+}
+log_by_lua_block {
+    require("resty.yar.observability").flush_logs()
+}
+```
+
+### Request ID tracing
+
+```lua
+require("resty.yar").setup {
+    service = { ... },
+    hooks = obs.trace_middleware(),
+}
+```
+
+Generates a per-request ID in `ngx.ctx.request_id` and propagates it to outgoing RPC calls via the `X-Request-Id` HTTP header. Access the current request ID in business code:
+
+```lua
+local request_id = require("resty.yar.observability").get_request_id()
+```
+
+### RPC metrics
+
+```nginx
+http {
+    lua_shared_dict yar_metrics 1m;
+
+    init_by_lua_block {
+        local obs = require("resty.yar.observability")
+        require("resty.yar").setup {
+            service = { add = function(a, b) return a + b end },
+            hooks = obs.metrics_recorder({ dict_name = "yar_metrics" }),
+        }
+    }
+
+    # Prometheus scrape endpoint
+    server {
+        location /metrics {
+            content_by_lua_block {
+                -- Access the recorder's export function via your own module
+                -- or store a reference during setup()
+                ngx.print(your_metrics_export_fn())
+            }
+        }
+    }
+}
+```
+
+Exports in standard Prometheus exposition format with `# HELP` / `# TYPE` metadata, sorted counters, and latency histogram buckets (`1/5/10/50/100/500/1000/5000ms` + `+Inf`).
+
+### Composing hooks
+
+```lua
+local obs = require("resty.yar.observability")
+
+require("resty.yar").setup {
+    service = { add = function(a, b) return a + b end },
+    hooks = obs.compose(
+        obs.trace_middleware(),
+        obs.access_logger(),
+        obs.metrics_recorder({ dict_name = "yar_metrics" })
+    ),
+}
+```
+
+Each hook is pcall-isolated; a failure in one hook does not affect others.
+
 ## yar-c Parameter Mapping
 
 | yar-c Parameter | OpenResty Equivalent | How |
-|-----------------|----------------------|-----|
+|----------------|----------------------|-----|
 | `READ_TIMEOUT` | `setup({connect_timeout, send_timeout, read_timeout})` | Three-stage cosocket timeouts via `sock:settimeouts()` |
 | `CHILD_INIT` | `setup({on_worker_init = fn})` + `init_worker()` | Called in `init_worker_by_lua_block` |
 | `PARENT_INIT` | `setup()` itself | Called in `init_by_lua_block` |
@@ -188,6 +317,42 @@ local pclient = require("resty.yar.client").get("tcp://host:9999")
 | `PID_FILE` | `pid` | nginx.conf directive |
 | `LOG_FILE` / `LOG_LEVEL` | `error_log` | nginx.conf directive |
 | `CHILD_USER` / `CHILD_GROUP` | `user` | nginx.conf directive |
+
+## Architecture
+
+```
++---------------------------------------------------------+
+|              OpenResty (nginx + LuaJIT)                  |
+|  +-----------------------------------------------------+|
+|  |           lua-resty-yar (adaptation layer)           ||
+|  |  +----------+  +----------+  +------------------+   ||
+|  |  | init.lua |  | client   |  | server/          |   ||
+|  |  | setup()  |  | new/get  |  | http/tcp/init    |   ||
+|  |  | cosocket |  | wrapper  |  | handler entry    |   ||
+|  |  | ngx.log  |  |          |  |                  |   ||
+|  |  +----+-----+  +----+-----+  +--------+--------+   ||
+|  |       |             |               |              ||
+|  |       +-------------+---------------+             ||
+|  |                     | delegates                    ||
+|  +---------------------+------------------------------+|
+|                        v                              |
+|  +-----------------------------------------------------+|
+|  |              lua-yar (protocol library)             ||
+|  |  Server Facade / Dispatcher / Transport /           ||
+|  |  Protocol / Framing / Packager / Message /          ||
+|  |  Client / Error / Log                               ||
+|  +-----------------------------------------------------+|
++---------------------------------------------------------+
+```
+
+The adaptation layer is thin and clear: cosocket injection, `ngx.log` writer, handler entry points, config bridging. All protocol logic (frame parsing, header validation, encoding/decoding, packager registry, hooks, Error classification) is delegated to lua-yar.
+
+## Documentation
+
+- [API Reference](docs/api.md) — Full method signatures and options
+- [Project Positioning](docs/positioning.md) — What lua-resty-yar is and isn't
+- [Design Decisions (ADR)](docs/design/decisions.md) — Architecture decision records
+- [Evaluation Reports](docs/reports/) — Engineering assessments, dependency audits, optimization plans
 
 ## Development
 
@@ -208,6 +373,12 @@ make test
 
 ```bash
 make lint
+```
+
+### OPM Build
+
+```bash
+opm build
 ```
 
 ## License

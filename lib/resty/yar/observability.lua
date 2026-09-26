@@ -60,11 +60,19 @@ end
 
 --- 简易 JSON 序列化（零依赖，不依赖 cjson）
 -- 仅支持扁平 table（string/number/boolean/nil 值），足够访问日志使用
+-- key 按字母序排序输出，保证日志确定性（ELK/Loki diff 友好）
 -- @param t table 待序列化的表
 -- @return string JSON 字符串
 local function to_json(t)
+    local keys = {}
+    for k in pairs(t) do
+        keys[#keys + 1] = k
+    end
+    table.sort(keys)
     local parts = {}
-    for k, v in pairs(t) do
+    for i = 1, #keys do
+        local k = keys[i]
+        local v = t[k]
         local val
         local tv = type(v)
         if tv == "string" then
@@ -202,8 +210,9 @@ end
 
 --- request ID 追踪中间件工厂函数
 -- 在 ngx.ctx 注入 request_id，供访问日志和业务代码关联使用。
--- trace context 跨服务传播：客户端通过 new_client opts.headers 注入 X-Request-Id，
--- 或通过 YAR 协议 provider/token 字段传播（lua-yar Client:set_options({ protocol = { provider = ..., token = ... } })）。
+-- 跨服务传播：on_request 同时向 ngx.ctx.yar_trace_headers 写入 X-Request-Id，
+-- new_client() 从此 ctx 字段读取并合并到出向请求 headers（HTTP 传输层）。
+-- 不碰 YAR 协议 provider/token 字段（保持与 PHP Yar 互操作）。
 -- @param opts table|nil { id_generator = fn() -> string }，默认多熵源生成器
 -- @return table hooks 表
 function _M.trace_middleware(opts)
@@ -216,10 +225,16 @@ function _M.trace_middleware(opts)
             if not ctx.request_id then
                 ctx.request_id = id_gen()
             end
+            -- 注入 trace header 供 new_client() 合并到出向 RPC 请求
+            if not ctx.yar_trace_headers then
+                ctx.yar_trace_headers = {}
+            end
+            if not ctx.yar_trace_headers["X-Request-Id"] then
+                ctx.yar_trace_headers["X-Request-Id"] = ctx.request_id
+            end
         end,
         on_response = function(_method, _retval, _err_obj)
             -- request_id 已在 on_request 注入，此处无需操作
-            -- trace context 传播通过 Client 的 provider/token 选项配置
         end,
     }
 end
@@ -305,21 +320,100 @@ function _M.metrics_recorder(opts)
         on_response = function(method, retval, err_obj)
             record(method, retval, err_obj)
         end,
-        --- 导出 Prometheus 文本格式
-        -- 仅导出以 prefix 开头的 key，过滤共享 dict 中其他模块的数据
+        --- 导出 Prometheus 文本格式（exposition format）
+        -- 按 metric 类型分组输出（counter → histogram），每个 metric 前补 # HELP / # TYPE 行
+        -- histogram bucket 按数值 le 升序排列（+Inf 在末尾），所有 key 排序保证输出确定性
         -- @return string Prometheus exposition format
         export = function()
             local keys = dict:get_keys(0)
-            local lines = {}
+            local counters = {}
+            local histograms = {}  -- method -> { buckets={{le,val,raw}}, sum, count }
 
             for _, key in ipairs(keys) do
                 if type(key) == "string" and #key > 0
                    and string.sub(key, 1, #prefix) == prefix then
                     local val = dict:get(key) or 0
-                    lines[#lines + 1] = key .. " " .. tostring(val)
+                    -- 解析 metric 后缀名（prefix_ 与 { 之间的部分）
+                    local suffix = string.match(key, "^" .. prefix .. "_([^{|]+)")
+                    if suffix == "calls_total" then
+                        counters[#counters + 1] = { key = key, val = val }
+                    elseif suffix == "duration_bucket" then
+                        local m = string.match(key, 'method="([^"]*)"')
+                        local le = string.match(key, 'le="([^"]*)"')
+                        if m then
+                            local h = histograms[m]
+                            if not h then
+                                h = { buckets = {}, sum = 0, count = 0 }
+                                histograms[m] = h
+                            end
+                            h.buckets[#h.buckets + 1] = { le = le, val = val, raw = key }
+                        end
+                    elseif suffix == "duration_sum" then
+                        local m = string.match(key, 'method="([^"]*)"')
+                        if m then
+                            local h = histograms[m]
+                            if not h then
+                                h = { buckets = {}, sum = 0, count = 0 }
+                                histograms[m] = h
+                            end
+                            h.sum = val
+                        end
+                    elseif suffix == "duration_count" then
+                        local m = string.match(key, 'method="([^"]*)"')
+                        if m then
+                            local h = histograms[m]
+                            if not h then
+                                h = { buckets = {}, sum = 0, count = 0 }
+                                histograms[m] = h
+                            end
+                            h.count = val
+                        end
+                    end
                 end
             end
 
+            local lines = {}
+
+            -- 计数器（key 字母序排序）
+            table.sort(counters, function(a, b) return a.key < b.key end)
+            if #counters > 0 then
+                lines[#lines + 1] = "# HELP " .. prefix .. "_calls_total Total RPC calls by method and status"
+                lines[#lines + 1] = "# TYPE " .. prefix .. "_calls_total counter"
+                for i = 1, #counters do
+                    lines[#lines + 1] = counters[i].key .. " " .. tostring(counters[i].val)
+                end
+            end
+
+            -- 直方图（method 字母序，bucket 按数值 le 升序）
+            -- HELP/TYPE 每 metric 名只输出一次（Prometheus exposition format 规范）
+            local methods = {}
+            for m in pairs(histograms) do methods[#methods + 1] = m end
+            table.sort(methods)
+
+            if #methods > 0 then
+                lines[#lines + 1] = "# HELP " .. prefix .. "_duration RPC call latency in milliseconds"
+                lines[#lines + 1] = "# TYPE " .. prefix .. "_duration histogram"
+            end
+
+            for i = 1, #methods do
+                local m = methods[i]
+                local h = histograms[m]
+
+                -- bucket 按 le 排序：数值升序，+Inf 在末尾
+                table.sort(h.buckets, function(a, b)
+                    if a.le == "+Inf" then return false end
+                    if b.le == "+Inf" then return true end
+                    return tonumber(a.le) < tonumber(b.le)
+                end)
+
+                for j = 1, #h.buckets do
+                    lines[#lines + 1] = h.buckets[j].raw .. " " .. tostring(h.buckets[j].val)
+                end
+                lines[#lines + 1] = prefix .. '_duration_sum{method="' .. m .. '"} ' .. tostring(h.sum)
+                lines[#lines + 1] = prefix .. '_duration_count{method="' .. m .. '"} ' .. tostring(h.count)
+            end
+
+            if #lines == 0 then return "" end
             return table.concat(lines, "\n") .. "\n"
         end,
     }
