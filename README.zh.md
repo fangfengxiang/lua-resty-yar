@@ -9,7 +9,7 @@
 [![Release](https://img.shields.io/github/v/release/fangfengxiang/lua-resty-yar)](https://github.com/fangfengxiang/lua-resty-yar/releases)
 
 > **高性能 OpenResty Yar RPC 框架。**
-> 基于 [lua-yar](https://github.com/fangfengxiang/lua-yar) 的 OpenResty 开发框架 —— 提供 cosocket 注入、`content_by_lua` handler 入口、进程级实例管理、插件注册体系、结构化配置 Schema、生命周期钩子、可观测性（metrics / trace / access-log），开箱即用。
+> 基于 [lua-yar](https://github.com/fangfengxiang/lua-yar) 的 OpenResty 开发框架 —— 提供 cosocket 注入、`content_by_lua` handler 入口、进程级实例管理、插件注册体系、结构化配置 Schema、生命周期钩子、可观测性（metrics / trace / access-log），开箱即用。详见 [项目定位](docs/positioning.md)、[架构概览](docs/architecture.md)、[性能调优指南](docs/performance-guide.md)。
 
 [Yar](https://github.com/laruence/yar)（Yet Another RPC Framework）是 PHP 生态中流行的轻量级 RPC 框架。[lua-yar](https://github.com/fangfengxiang/lua-yar) 是纯 Lua 协议实现；**lua-resty-yar** 将其接入 OpenResty 非阻塞 I/O 运行时 —— 生产环境即装即用。
 

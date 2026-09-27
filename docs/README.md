@@ -1,6 +1,6 @@
 # lua-resty-yar 文档目录
 
-本目录包含 lua-resty-yar（OpenResty Yar RPC 适配层）的全部文档：API 参考、设计决策（ADR）、工程报告。
+本目录包含 lua-resty-yar（OpenResty 轻量 Yar RPC 框架）的全部文档：API 参考、设计决策（ADR）、工程报告。
 
 ## 文档清单
 
@@ -10,7 +10,7 @@
 |------|------|------|
 | [index.md](index.md) | EN | 项目首页：Features、Installation、Quick Start（HTTP / TCP） |
 | [api.md](api.md) | EN | 完整 API 参考：`setup()`、`get_server()`、`get_tcp_server()`、配置选项 |
-| [positioning.md](positioning.md) | ZH | 项目定位：适配层 vs 平台、与 lua-yar / yar-c / yar-php 的生态关系、架构概览 |
+| [positioning.md](positioning.md) | ZH | 项目定位：轻量 RPC 框架 vs 平台、与 lua-yar / yar-c / yar-php 的生态关系、架构概览 |
 
 ### design/ — 设计决策（ADR）
 
@@ -19,7 +19,7 @@
 | 文档 | 决策数 | 内容 |
 |------|--------|------|
 | [decisions.md](design/decisions.md) | 16 | ADR 总索引：设计哲学三原则 + 5 模块大纲表 + 阅读指南 |
-| [adaptation-layer.md](design/adaptation-layer.md) | 3 | 适配层定位、OPM 目录结构、进程级 Server 实例复用 |
+| [adaptation-layer.md](design/adaptation-layer.md) | 3 | 框架定位、OPM 目录结构、进程级 Server 实例复用 |
 | [handler-delegation.md](design/handler-delegation.md) | 3 | HTTP/TCP handler 委托策略、自动检测上下文 |
 | [observability-integration.md](design/observability-integration.md) | 5 | ngx.log 注入、结构化访问日志、request ID 贯穿、trace context、worker-local metrics buffer |
 | [configuration-bridge.md](design/configuration-bridge.md) | 3 | 配置桥接、yar-c 参数映射、嵌套分域配置 Schema + flat 向后兼容 |

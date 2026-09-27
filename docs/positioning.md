@@ -44,7 +44,7 @@ lua-resty-yar 将 lua-yar 纯协议库接入 OpenResty 运行时，提供：
 | yar-php | PHP | PHP stream / curl | PHP 原生实现 |
 | yar-c | C | libcurl（同步阻塞） | C 语言参考实现 |
 | lua-yar | Lua | luasocket / cosocket（注入） | 纯协议库 / SDK |
-| lua-resty-yar | Lua | cosocket（OpenResty 原生） | OpenResty 适配层 |
+| lua-resty-yar | Lua | cosocket（OpenResty 原生） | 轻量 RPC 框架 |
 
 所有实现遵循同一 Yar RPC 协议，可互操作。
 
@@ -54,7 +54,7 @@ lua-resty-yar 将 lua-yar 纯协议库接入 OpenResty 运行时，提供：
 ┌─────────────────────────────────────────────────────────┐
 │                    OpenResty (nginx + LuaJIT)            │
 │  ┌─────────────────────────────────────────────────────┐ │
-│  │              lua-resty-yar (适配层)                 │ │
+│  │          lua-resty-yar (轻量 RPC 框架)              │ │
 │  │  ┌──────────┐  ┌──────────┐  ┌──────────────────┐  │ │
 │  │  │ init.lua │  │ client   │  │ server/          │  │ │
 │  │  │ setup()  │  │ new/get  │  │ http/tcp/init    │  │ │
@@ -76,13 +76,16 @@ lua-resty-yar 将 lua-yar 纯协议库接入 OpenResty 运行时，提供：
 └─────────────────────────────────────────────────────────┘
 ```
 
-**适配层职责（薄而清晰）：**
+**框架核心职责：**
 1. cosocket 注入 — `Client.set_socket(ngx.socket)`
 2. ngx.log writer 注入 — `Log.set_writer(fn)`
 3. Server Facade 实例管理 — `init_by_lua` 创建，worker 内复用
 4. handler 入口 — `content_by_lua_block` → `server:handle(spec)`
-5. 配置桥接 — 扁平配置 → lua-yar 嵌套选项结构
-6. C 扩展注册 — cjson / cmsgpack（可选加速）
+5. 配置体系 — Schema 驱动校验、嵌套分域（server/client/observability/extensions）、flat 向后兼容、deep_merge
+6. 插件注册 — `registry.register(name, factory, opts)` 优先级排序 + named compose
+7. 生命周期钩子 — on_request/on_response/on_error/on_timeout/on_connect/on_init_worker
+8. 可观测性 — 结构化 JSON 访问日志、request ID 追踪、Prometheus metrics（buffer 模式）
+9. C 扩展注册 — cjson / cmsgpack（可选加速）
 
 **协议库职责（lua-yar，不重造）：**
 1. YAR 协议解析与渲染（Protocol.parse / Protocol.render）
@@ -94,7 +97,7 @@ lua-resty-yar 将 lua-yar 纯协议库接入 OpenResty 运行时，提供：
 
 ## 五、设计原则
 
-1. **适配而非重造** — 协议逻辑全部委托 lua-yar，适配层只做运行时桥接。不重复实现协议解析、编解码、帧处理。
+1. **委托而非重造** — 协议逻辑全部委托 lua-yar，框架只做 OpenResty 集成与基础设施。不重复实现协议解析、编解码、帧处理。
 
 2. **OpenResty 原生优先** — 优先使用 OpenResty 原生能力（cosocket、ngx.log、ngx.req、lua_package_path），而非引入第三方依赖。C 扩展加速为可选增强，非硬依赖。
 
@@ -105,7 +108,7 @@ lua-resty-yar 将 lua-yar 纯协议库接入 OpenResty 运行时，提供：
 - [README.md](../README.md) — 快速上手与 API 参考（英文）
 - [API 参考](api.md) — 完整方法签名与选项
 - [docs/design/decisions.md](design/decisions.md) — ADR 设计文档索引
-- [docs/design/adaptation-layer.md](design/adaptation-layer.md) — 适配层定位与分层设计
+- [docs/design/adaptation-layer.md](design/adaptation-layer.md) — 框架定位与分层设计
 - [docs/design/handler-delegation.md](design/handler-delegation.md) — HTTP/TCP handler 委托策略
 - [docs/design/observability-integration.md](design/observability-integration.md) — 可观测性集成设计
 - [docs/design/configuration-bridge.md](design/configuration-bridge.md) — 配置桥接与参数映射

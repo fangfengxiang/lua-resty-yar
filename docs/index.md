@@ -77,6 +77,6 @@ stream {
 ## Documentation
 
 - [API Reference](api.md) — full API documentation
-- [Positioning](positioning.md) — adaptation layer vs platform, design philosophy
+- [Positioning](positioning.md) — lightweight RPC framework vs platform, design philosophy
 - [Design Decisions](design/decisions.md) — ADR index and module breakdown
 - [Reports](reports/evaluation-report.md) — evaluation, optimization plans, and reviews

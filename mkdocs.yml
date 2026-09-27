@@ -52,7 +52,7 @@ nav:
       - Positioning: positioning.md
   - Design:
       - ADR Index: design/decisions.md
-      - Adaptation Layer: design/adaptation-layer.md
+      - Framework Positioning: design/adaptation-layer.md
       - Configuration Bridge: design/configuration-bridge.md
       - Handler Delegation: design/handler-delegation.md
       - Observability Integration: design/observability-integration.md

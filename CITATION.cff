@@ -7,7 +7,7 @@ authors:
     email: fangfengxiang@gmail.com
 repository-code: "https://github.com/fangfengxiang/lua-resty-yar"
 url: "https://github.com/fangfengxiang/lua-resty-yar"
-abstract: "High-performance Yar RPC server for OpenResty. An OPM adapter layer built on lua-yar — provides cosocket injection, content_by_lua handlers, and process-level instance management for HTTP / TCP stream Yar RPC services. Interoperable with PHP Yar / yar-c."
+abstract: "Lightweight Yar RPC framework for OpenResty. Built on lua-yar — provides cosocket injection, configuration management, plugin registry, observability instrumentation, lifecycle hooks, and content_by_lua handlers for HTTP / TCP stream Yar RPC services. Interoperable with PHP Yar / yar-c."
 keywords:
   - rpc
   - yar

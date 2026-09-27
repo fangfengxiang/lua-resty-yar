@@ -1,5 +1,5 @@
 -- lib/resty/yar/hooks.lua
--- 框架生命周期钩子适配层。
+-- 框架生命周期钩子适配。
 --
 -- lua-yar 协议层只有 on_request(method, params) / on_response(method, retval, err_obj)。
 -- 本模块从 on_response 派生 on_error / on_timeout，不改 lua-yar 协议层。

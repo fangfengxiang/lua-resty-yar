@@ -64,7 +64,7 @@ local _M = {}
 
 ### Error Handling
 
-lua-resty-yar is an adapter layer — it delegates all protocol logic to lua-yar. Error handling follows the lua-yar layered strategy:
+lua-resty-yar is a lightweight RPC framework — it delegates all protocol logic to lua-yar. Error handling follows the lua-yar layered strategy:
 
 - **Internal modules** (init.lua, server/http.lua, server/tcp.lua): `return nil, err_string` (Lua convention)
 - **Programming errors** (e.g., `setup()` not called): `error(msg, 2)` (points to caller)

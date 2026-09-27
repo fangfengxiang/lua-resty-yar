@@ -1,6 +1,6 @@
 # 可观测性集成设计决策
 
-可观测性是生产级 RPC 服务的必备能力——日志、追踪、metrics。lua-resty-yar 作为适配层，将 lua-yar 的可观测性扩展点（Log writer 注入、hooks 机制）桥接到 OpenResty 运行时，并补充结构化日志与链路追踪支持。
+可观测性是生产级 RPC 服务的必备能力——日志、追踪、metrics。lua-resty-yar 作为轻量 RPC 框架，将 lua-yar 的可观测性扩展点（Log writer 注入、hooks 机制）桥接到 OpenResty 运行时，并补充结构化日志与链路追踪支持。
 
 ---
 
@@ -8,7 +8,7 @@
 
 - **状态**：已实现
 - **决策驱动因素**：运行时适配
-- **关联决策**：#1（适配层定位）
+- **关联决策**：#1（框架定位）
 
 ### 背景
 
@@ -42,7 +42,7 @@ end)
 
 **为什么不在 lua-yar 内部硬编码 ngx.log：**
 - lua-yar 定位为运行时无关的纯协议库，不应引用 `ngx`
-- writer 注入是对标 Python logging 的 `addHandler` 模式——库提供扩展点，运行时适配层注入
+- writer 注入是对标 Python logging 的 `addHandler` 模式——库提供扩展点，运行时框架注入
 - 对标 lua-resty-redis：库内部用 `ngx.log` 是因为它专为 OpenResty 设计；lua-yar 不是
 
 ### 业界参考
@@ -195,7 +195,7 @@ nginx 原生 `log_format` 生成文本日志，难以被日志采集系统（ELK
 
 - **状态**：已实现
 - **决策驱动因素**：性能 + OpenResty 原生惯例
-- **关联决策**：#8（结构化 JSON 访问日志）、#1（适配层定位）
+- **关联决策**：#8（结构化 JSON 访问日志）、#1（框架定位）
 
 ### 背景
 
@@ -228,8 +228,8 @@ OpenResty 的 `log_by_lua` 阶段在响应已发给客户端**之后**执行，�
 - defer 模式仅 HTTP 上下文可用，文档明确说明
 - TCP 模式用户使用默认即时模式（`defer` 不设或 false）
 
-**适配层 vs 平台分界：**
-- 此优化是**阶段挂接映射**（适配层挂接 OpenResty 原生 `log_by_lua` 阶段），不是实现自己的 phase 编排系统
+**框架 vs 平台分界：**
+- 此优化是**阶段挂接映射**（框架挂接 OpenResty 原生 `log_by_lua` 阶段），不是实现自己的 phase 编排系统
 - 对标 Kong 的 log phase plugin：Kong 在 log phase 调用 plugin，lua-resty-yar 在 log phase 调用 `flush_logs()`
 - 不引入插件架构、不引入 phase 编排——只是多挂接一个 OpenResty 原生阶段
 

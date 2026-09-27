@@ -28,6 +28,12 @@ local _server
 
 --- stream content_by_lua 入口
 function _M.serve()
+    -- worker 退出时不再接受新连接，已有连接由 nginx worker_shutdown_timeout 处理
+    if ngx.worker.exiting() then
+        ngx.log(ngx.INFO, "[resty.yar tcp] worker exiting, skip new connection")
+        return
+    end
+
     local sock, err = ngx.req.socket()
     if not sock then
         ngx.log(ngx.ERR, "[resty.yar tcp] failed to get downstream socket: " .. tostring(err))

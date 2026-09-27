@@ -1,10 +1,10 @@
-# 适配层定位设计决策
+# 框架定位设计决策
 
-适配层定位是 lua-resty-yar 最核心的架构决策——它是什么、不是什么、如何与 lua-yar 分工。
+框架定位是 lua-resty-yar 最核心的架构决策——它是什么、不是什么、如何与 lua-yar 分工。
 
 ---
 
-## 1. 适配层定位：OPM 适配层而非独立实现
+## 1. 框架定位：委托协议库而非独立实现
 
 - **状态**：已实现
 - **决策驱动因素**：不重复造轮子
@@ -21,13 +21,13 @@ OpenResty 是基于 nginx + LuaJIT 的高性能 Web 平台，提供 cosocket（�
 > "Don't repeat yourself." — Hunt & Thomas
 > "不要重复自己。" — Hunt & Thomas
 
-决策：lua-resty-yar 定位为 **OPM 适配层**，而非独立协议实现。
+决策：lua-resty-yar 定位为 **轻量 RPC 框架**，而非独立协议实现。
 
-**选择适配层而非独立实现的理由：**
+**选择框架而非独立实现的理由：**
 - lua-yar 已有完整的协议实现（帧解析、header 校验、JSON/Msgpack 编解码、packager registry、hooks 机制、结构化 Error），重新实现是重复劳动
-- 适配层职责单一：cosocket 注入、ngx.log 桥接、handler 入口、配置映射——薄而清晰
-- 协议演进时只需更新 lua-yar，适配层无需改动
-- 对标业界：lua-resty-redis 是 lua-resty-core 对 redis 服务的适配，不重新实现 RESP 协议
+- 框架职责清晰：cosocket 注入、ngx.log 桥接、handler 入口、配置映射 + 插件注册、配置体系、生命周期钩子、可观测性仪表化
+- 协议演进时只需更新 lua-yar，框架无需改动
+- 对标业界：gRPC-go 委托 gRPC-Core 协议库，在其上构建框架能力（拦截器、配置、可观测性）；lua-resty-redis 是纯适配层（无框架能力），lua-resty-yar 比它多一层框架基础设施
 
 **不适配的部分（保持 lua-yar 原样）：**
 - 协议解析（Protocol.parse / Protocol.render）
@@ -44,11 +44,11 @@ OpenResty 是基于 nginx + LuaJIT 的高性能 Web 平台，提供 cosocket（�
 
 ### 代码评价
 
-`init.lua` 的 `setup()` 函数是适配层的核心——10 行代码完成全部适配：cosocket 注入、ngx.log writer 注入、Server Facade 创建、配置合并。handler 文件（http.lua/tcp.lua）各 30-50 行，只做 I/O 桥接和委托。适配层总代码量 < 300 行，远小于 lua-yar 协议核心。
+`init.lua` 的 `setup()` 函数是框架的核心入口——完成 cosocket 注入、ngx.log writer 注入、Server Facade 创建、配置合并、插件注册、可观测性仪表化。handler 文件（http.lua/tcp.lua）各 30-50 行，只做 I/O 桥接和委托。框架层（init + config + registry + hooks + observability + server 三件套）总代码量远小于 lua-yar 协议核心，保持轻量。
 
 ### 知识领域
 
-1. *The Pragmatic Programmer*（Hunt & Thomas）— DRY 原则与适配层设计
+1. *The Pragmatic Programmer*（Hunt & Thomas）— DRY 原则与框架设计
 2. *The Art of Unix Programming*（Raymond）— "Do one thing and do it well" 与职责单一
 
 ---
@@ -57,7 +57,7 @@ OpenResty 是基于 nginx + LuaJIT 的高性能 Web 平台，提供 cosocket（�
 
 - **状态**：已实现
 - **决策驱动因素**：社区惯例
-- **关联决策**：#1（适配层定位）
+- **关联决策**：#1（框架定位）
 
 ### 背景
 
@@ -84,7 +84,7 @@ lib/resty/yar/
 **选择 `resty.yar` 而非 `yar` 模块路径的理由：**
 - OPM 惯例：`resty.*` 前缀是 OpenResty 生态的命名空间约定（lua-resty-core、lua-resty-http、lua-resty-redis 均如此）
 - 避免与 lua-yar 的 `yar` 模块路径冲突——用户可同时 `require("yar")` 和 `require("resty.yar")`
-- `resty.yar.server` vs `yar.server`：前者是 OpenResty 适配层入口，后者是协议库入口，语义清晰
+- `resty.yar.server` vs `yar.server`：前者是 OpenResty 框架入口，后者是协议库入口，语义清晰
 
 **dist.ini 配置：**
 - `lib_dir=lib` — OPM 包代码根目录
@@ -113,7 +113,7 @@ lib/resty/yar/
 
 - **状态**：已实现
 - **决策驱动因素**：性能
-- **关联决策**：#1（适配层定位）、#5（TCP handler 委托）
+- **关联决策**：#1（框架定位）、#5（TCP handler 委托）
 
 ### 背景
 

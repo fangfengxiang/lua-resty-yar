@@ -1,5 +1,5 @@
 -- lib/resty/yar/init.lua
--- lua-resty-yar: OpenResty Yar RPC 适配层主入口。
+-- lua-resty-yar: OpenResty 轻量 Yar RPC 框架主入口。
 --
 -- 在 init_by_lua_block 阶段调用 setup(opts) 一次，完成：
 --   1. cosocket 注入（出向 RPC 走 OpenResty 非阻塞 I/O）

@@ -1,7 +1,7 @@
 use Test::Nginx::Socket::Lua::Stream;
 
 repeat_each(2);
-plan tests => repeat_each() * 6;
+plan tests => repeat_each() * blocks() * 3;
 
 run_tests();
 
@@ -100,6 +100,52 @@ GET /yartest
 --- response_body
 r1=3
 r2=hello, yar
+--- no_error_log
+[error]
+
+=== TEST 3: worker exiting — serve() skips connection processing
+--- main_config
+    env LUA_PATH;
+--- stream_config
+    lua_package_path ";;";
+    lua_socket_log_errors off;
+    init_by_lua_block {
+        -- Mock: pretend worker is exiting
+        ngx.worker.exiting = function() return true end
+        require("resty.yar").setup {
+            service = {
+                add = function(a, b) return a + b end,
+            },
+            read_timeout = 500,
+        }
+    }
+--- stream_server_config
+    listen 19853;
+    content_by_lua_block {
+        require("resty.yar.server.tcp").serve()
+    }
+--- config
+    location /yartest {
+        content_by_lua_block {
+            local sock = ngx.socket.tcp()
+            sock:settimeouts(nil, nil, 300)
+            sock:connect("127.0.0.1", 19853)
+            -- 不发送数据：worker exiting 时 serve() 直接返回，
+            -- 不读取任何数据 → 服务端 FIN 关闭（非 RST），客户端收到 "closed"
+            local Framing = require("yar.protocol.framing")
+            local resp = Framing.receive_message(sock)
+            if resp then
+                ngx.say("result:unexpected")
+            else
+                ngx.say("result:skipped")
+            end
+            sock:close()
+        }
+    }
+--- request
+GET /yartest
+--- response_body
+result:skipped
 --- no_error_log
 [error]
 

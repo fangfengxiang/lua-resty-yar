@@ -8,7 +8,7 @@ Handler 委托是 lua-resty-yar 的核心实现——HTTP/TCP handler 如何将 
 
 - **状态**：已实现
 - **决策驱动因素**：消除重复逻辑
-- **关联决策**：#1（适配层定位）、#6（自动检测）
+- **关联决策**：#1（框架定位）、#6（自动检测）
 
 ### 背景
 
@@ -61,7 +61,7 @@ lua-yar 的 HTTP 传输层提供 `serve_callback(spec, dispatcher, opts)` 模式
 
 - **状态**：已实现
 - **决策驱动因素**：统一 Server 实例
-- **关联决策**：#1（适配层定位）、#3（进程级实例复用）
+- **关联决策**：#1（框架定位）、#3（进程级实例复用）
 
 ### 背景
 
@@ -155,3 +155,49 @@ OpenResty 的 `http {}` 和 `stream {}` 两个上下文都可以用 `content_by_
 
 1. *The Art of Unix Programming*（Raymond）— "Make the common case fast" 与易用性
 2. *nginx stream module docs* — HTTP/stream 上下文差异
+
+---
+
+## 17. TCP handler worker exiting 优雅关闭检测
+
+- **状态**：已实现
+- **决策驱动因素**：优雅关闭 / 资源清理
+- **关联决策**：#5（TCP handler 委托）
+
+### 背景
+
+nginx 在 `nginx -s reload` 或 `nginx -s quit` 时优雅关闭 worker 进程。`worker_shutdown_timeout` 指令控制等待已有连接关闭的超时。在 keepalive 模式下，TcpTransport.serve 内部循环读取同一 TCP 连接的多条 YAR 消息——若 worker 正在关闭时仍接受新连接并进入 keepalive 循环，可能导致关闭延迟或连接中断。
+
+### 思考与取舍
+
+> "Fail fast." — 工程原则
+> "快速失败。" — 工程原则
+
+决策：在 `serve()` 入口检测 `ngx.worker.exiting()`，worker 退出时跳过新连接处理。
+
+**入口检测而非循环内检测的理由：**
+- `serve()` 是 stream `content_by_lua_block` 入口，每连接调用一次——此处检测开销最小
+- keepalive 循环在 lua-yar TcpTransport.serve 内部，框架层不应侵入协议库循环逻辑
+- 已有连接的 keepalive 循环由 nginx `worker_shutdown_timeout` 超时机制处理，框架层无需干预
+- 入口检测快速短路，worker 退出时不分配 cosocket、不设超时、不进 handle 委托——零资源浪费
+
+**与 nginx 优雅关闭机制的协作：**
+- `ngx.worker.exiting()` 返回 true 时，worker 已收到 shutdown 信号
+- 新连接直接 return，nginx 关闭监听 socket，不再 accept
+- 已有连接的 keepalive 循环继续处理完当前消息后由 `worker_shutdown_timeout` 超时关闭
+- INFO 级日志记录跳过行为，便于运维排查
+
+### 业界参考
+
+- **nginx `worker_shutdown_timeout`**：控制 worker 优雅关闭时等待已有连接的超时
+- **Kong**：`kong.exit()` 钩子在 worker 退出时执行清理，类似 `ngx.worker.exiting()` 检测
+- **OpenResty `ngx.worker.exiting()`**：官方 API，返回 worker 是否正在退出
+
+### 代码评价
+
+`tcp.lua:31-35` 仅 4 行：`ngx.worker.exiting()` 检测 + INFO 日志 + return。零侵入 keepalive 循环，零额外状态。与已有优雅关闭（`pcall(sock.shutdown, "send")` lingering close）形成双层保障：入口拒绝新连接 + 出口优雅关闭已处理连接。
+
+### 知识领域
+
+1. *nginx documentation* — `worker_shutdown_timeout` 指令与优雅关闭机制
+2. *OpenResty documentation* — `ngx.worker.exiting()` API

@@ -9,7 +9,7 @@
 [![Release](https://img.shields.io/github/v/release/fangfengxiang/lua-resty-yar)](https://github.com/fangfengxiang/lua-resty-yar/releases)
 
 > **Yar RPC framework for OpenResty.**
-> Built on [lua-yar](https://github.com/fangfengxiang/lua-yar) — provides cosocket I/O, structured config, plugin registry, lifecycle hooks, and observability for running Yar services at scale. See [Project Positioning](docs/positioning.md).
+> Built on [lua-yar](https://github.com/fangfengxiang/lua-yar) — provides cosocket I/O, structured config, plugin registry, lifecycle hooks, and observability for running Yar services at scale. See [Project Positioning](docs/positioning.md), [Architecture](docs/architecture.md), and [Performance Guide](docs/performance-guide.md).
 
 [Yar](https://github.com/laruence/yar) (Yet Another RPC Framework) is a lightweight concurrent RPC framework from the PHP ecosystem. This project is the **OpenResty development framework** for Yar — not the protocol library itself. The pure-Lua protocol implementation lives in [lua-yar](https://github.com/fangfengxiang/lua-yar); lua-resty-yar wraps it with everything OpenResty needs to run Yar in production: non-blocking cosocket I/O, connection pooling, a nested config schema, a priority-ordered plugin registry, lifecycle hook adaptation, and a built-in observability suite (access logging, request tracing, Prometheus metrics).
 

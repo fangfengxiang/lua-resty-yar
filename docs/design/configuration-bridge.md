@@ -8,7 +8,7 @@
 
 - **状态**：已实现
 - **决策驱动因素**：配置一致性
-- **关联决策**：#1（适配层定位）、#11（yar-c 参数映射）
+- **关联决策**：#1（框架定位）、#11（yar-c 参数映射）
 
 ### 背景
 
@@ -24,7 +24,7 @@ lua-yar 的客户端选项采用嵌套结构（`transport.timeout` / `transport.
 **扁平配置的理由：**
 - 用户在 nginx 配置中写 `setup({ connect_timeout = 2000 })` 比 `setup({ transport = { connect_timeout = 2000 } })` 更简洁
 - 扁平配置是 OpenResty 社区惯例（lua-resty-redis 的 `redis:connect(host, port, opts)` 用扁平 opts）
-- 嵌套结构是 lua-yar 协议库的内部需求，适配层负责桥接
+- 嵌套结构是 lua-yar 协议库的内部需求，框架负责桥接
 
 **桥接实现：**
 ```lua
@@ -139,7 +139,7 @@ README 的"yar-c Parameter Mapping"表格清晰展示参数对应关系。`setup
 
 ### 背景
 
-决策 #10 将 `setup(opts)` 设计为扁平配置，桥接到 lua-yar 嵌套选项。适配层初期只有 server/client 两类参数，扁平足够。随框架演进（observability 集成 #7-#9、extensions C 扩展开关、未来 plugin/中间件配置），扁平 key 数量膨胀（20+），缺乏域归属标识，难以扩展和校验。
+决策 #10 将 `setup(opts)` 设计为扁平配置，桥接到 lua-yar 嵌套选项。框架初期只有 server/client 两类参数，扁平足够。随框架演进（observability 集成 #7-#9、extensions C 扩展开关、未来 plugin/中间件配置），扁平 key 数量膨胀（20+），缺乏域归属标识，难以扩展和校验。
 
 ### 思考与取舍
 

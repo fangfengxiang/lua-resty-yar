@@ -269,7 +269,7 @@ lua-resty-yar 的 compose 只传递这两个。
 #### 设计
 
 ```lua
--- hooks.lua（新模块，框架钩子适配层）
+-- hooks.lua（新模块，框架钩子适配）
 
 -- 将框架钩子适配为 lua-yar 的 on_request/on_response 协议
 function _M.adapt(framework_hooks)
